@@ -9,6 +9,11 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# Project root (the directory that holds app/, frontend/, madf.db). Anchoring
+# path defaults here keeps behaviour identical regardless of the working
+# directory the process is started from.
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -173,7 +178,9 @@ class Settings(BaseSettings):
         if self.DATABASE_URL_OVERRIDE:
              return self.DATABASE_URL_OVERRIDE
         
-        return "file:madf.db"
+        # Anchor the default SQLite file to the project root so the database
+        # does not depend on the process working directory.
+        return f"file:{PROJECT_ROOT / 'madf.db'}"
 
 settings = Settings()
 

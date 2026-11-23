@@ -5,13 +5,14 @@ import os
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Iterable, Optional
 
 import libsql_client
 import psycopg2
 from psycopg2.extras import RealDictCursor
 
-from app.core.config import settings
+from app.core.config import PROJECT_ROOT, settings
 from app.db.migrations import (
     ensure_decision_schema,
     ensure_multimodal_schema,
@@ -253,12 +254,25 @@ class Database:
 
         return RetryingLibsqlClient(client)
 
-    def init_db(self, schema_path="app/db/schema.sql"):
+    def init_db(self, schema_path=None):
         self._sync_backend_flags()
 
         if self.is_postgres:
             logger.info("PostgreSQL detected, skipping schema.sql init. Use Alembic or schema_pg.sql.")
             return
+
+        if schema_path is None:
+            resolved = PROJECT_ROOT / "app" / "db" / "schema.sql"
+        else:
+            candidate = Path(schema_path)
+            if candidate.is_absolute():
+                resolved = candidate
+            else:
+                # Keep backwards compatibility with callers that pass a path
+                # relative to their CWD, but never depend on the CWD when the
+                # file only exists under the project root.
+                resolved = candidate if candidate.exists() else PROJECT_ROOT / candidate
+        schema_path = str(resolved)
 
         if not os.path.exists(schema_path):
             logger.warning("Schema file not found: %s", schema_path)

@@ -5,6 +5,7 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.db.client import db_manager
+from app.core.config import settings
 import logging
 
 logging.basicConfig(level=logging.INFO)
@@ -12,13 +13,15 @@ logging.basicConfig(level=logging.INFO)
 if __name__ == "__main__":
     print("正在初始化数据库...")
     try:
-        db_manager.init_db(schema_path="db/schema.sql")
+        db_manager.init_db()
         print("数据库初始化成功！")
         
         # 重新检查数据库
         print("\n检查数据库表...")
         import sqlite3
-        conn = sqlite3.connect('madf.db')
+        db_url = settings.DATABASE_URL
+        db_path = db_url[len("file:"):] if db_url.startswith("file:") else "madf.db"
+        conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
         cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
         tables = cursor.fetchall()
