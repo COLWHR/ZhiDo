@@ -6,21 +6,28 @@ import uuid
 from typing import Any, Optional
 from app.db.session import db_manager
 from app.crud import (
-    get_forum, 
-    get_forum_participants, 
-    create_message, 
+    get_forum,
+    get_forum_participants,
+    create_message,
     get_forum_messages,
     update_forum,
     update_forum_participant,
-    get_persona
+    get_persona,
+    build_knowledge_block
 )
 from app.schemas import MessageCreate
 from app.agent.agent import ModeratorAgent, ParticipantAgent
 from app.agent.memory import SharedMemory
+from app.services.duxin_risk_service import assess_risk, build_crisis_reply
+from app.crud.crud_round_record import create_round_record
 from app.core.websockets import manager
 # Removed SQLAlchemy models import as we use schemas/dicts
 from app.core.time_utils import get_beijing_time, get_beijing_time_iso
 from app.core.async_utils import async_generator_wrapper
+from app.core.config import settings
+from app.services import credit_service
+from app.services.credit_service import InsufficientCreditsError
+from app.db.client import fetch_one
 from contextlib import contextmanager
 
 logger = logging.getLogger(__name__)
@@ -72,6 +79,30 @@ class ForumScheduler:
         question_phrases = ("怎么看", "为什么", "能不能", "可不可以", "怎么理解", "你觉得", "请问")
         return any(phrase in last_content for phrase in question_phrases)
 
+    def _max_recent_similarity(self, candidate_terms: set[str], messages: list[Any], window: int = 4) -> float:
+        """候选词集合与近期每条发言的最大 Jaccard 相似度（用于重复度判定）。"""
+        if not candidate_terms:
+            return 0.0
+        max_sim = 0.0
+        for m in messages[-window:]:
+            terms = self._extract_terms(str(getattr(m, "content", "") or ""))
+            if not terms:
+                continue
+            sim = len(candidate_terms & terms) / len(candidate_terms | terms)
+            if sim > max_sim:
+                max_sim = sim
+        return max_sim
+
+    def _novelty_ratio(self, candidate_terms: set[str], messages: list[Any], window: int = 4) -> float:
+        """候选词中在近期窗口内从未出现过的新词占比（词面观点新颖度 f_nov）。"""
+        if not candidate_terms:
+            return 0.0
+        recent_union: set[str] = set()
+        for m in messages[-window:]:
+            recent_union |= self._extract_terms(str(getattr(m, "content", "") or ""))
+        novel_terms = candidate_terms - recent_union
+        return len(novel_terms) / len(candidate_terms)
+
     def _estimate_candidate_score(
         self,
         agent: ParticipantAgent,
@@ -80,7 +111,10 @@ class ForumScheduler:
         turn_count: int,
         batch_spoken_agents: set[ParticipantAgent],
         turn_mode: str = "synthesis",
+        n_participants: Optional[int] = None,
+        ablation_flags: Optional[dict] = None,
     ) -> int:
+        flags = ablation_flags or {}
         priority = thought.get("priority", 20)
         try:
             score = int(priority)
@@ -142,6 +176,34 @@ class ForumScheduler:
         if not messages:
             score += 5
 
+        # --- 成本因子 f_cost：以累计发言（LLM 调用）次数衡量相对调用成本 ---
+        # 超过公平份额的候选边际成本更高、抑制其再次发言；调用较少者获得小幅补偿。
+        if not flags.get("no_cost") and n_participants and turn_count >= 1:
+            fair_share = turn_count / n_participants
+            overuse = getattr(agent, "speech_count", 0) - fair_share
+            if overuse > 0:
+                score -= min(18, int(overuse * 6))
+            else:
+                score += min(8, int(-overuse * 4))
+
+        # 候选词集合（f_nov 与 f_div 共用）
+        candidate_terms = self._extract_terms(combined)
+
+        # --- 观点新颖度因子 f_nov：候选带来近期未出现的新词，按信息增量正向奖励 ---
+        # 与 f_div 视角不同：f_nov 参照近期发言"并集"看新词比例（奖励新信息），
+        # f_div 参照"单条最相似发言"看 Jaccard（惩罚重复）。
+        if not flags.get("no_novelty"):
+            nov_ratio = self._novelty_ratio(candidate_terms, messages)
+            score += int(nov_ratio * 8)
+
+        # --- 重复度因子 f_div：候选思路与近期发言高度重合时抑制"老调重弹" ---
+        # 注意与相关性区分：相关性只看是否切题（少量重合词），重复度看归一化相似度。
+        if not flags.get("no_diversity"):
+            max_sim = self._max_recent_similarity(candidate_terms, messages)
+            if max_sim >= 0.5:
+                penalty = int((max_sim - 0.5) * 32 + 4)
+                score -= min(16, penalty)
+
         return self._clamp(score, 0, 100)
 
     def _choose_fallback_speaker(
@@ -151,6 +213,8 @@ class ForumScheduler:
         batch_spoken_agents: set[ParticipantAgent],
         turn_count: int,
         fallback_thought: Optional[dict] = None,
+        n_participants: Optional[int] = None,
+        ablation_flags: Optional[dict] = None,
     ) -> Optional[ParticipantAgent]:
         if not participants:
             return None
@@ -169,12 +233,18 @@ class ForumScheduler:
                 continue
             if agent in batch_spoken_agents and len(batch_spoken_agents) < len(participants):
                 continue
-            score = self._estimate_candidate_score(agent, thought, messages, turn_count, batch_spoken_agents)
+            score = self._estimate_candidate_score(
+                agent, thought, messages, turn_count, batch_spoken_agents,
+                n_participants=n_participants, ablation_flags=ablation_flags,
+            )
             ranked.append((agent, score))
 
         if not ranked:
             for agent in participants:
-                score = self._estimate_candidate_score(agent, thought, messages, turn_count, batch_spoken_agents)
+                score = self._estimate_candidate_score(
+                    agent, thought, messages, turn_count, batch_spoken_agents,
+                    n_participants=n_participants, ablation_flags=ablation_flags,
+                )
                 ranked.append((agent, score))
 
         if not ranked:
@@ -253,6 +323,11 @@ class ForumScheduler:
         if forum_id in self.running_tasks:
             logger.warning(f"Forum {forum_id} is already running.")
             return
+
+        if len(self.running_tasks) >= max(1, settings.MAX_CONCURRENT_FORUMS):
+            raise RuntimeError(
+                f"同时运行的圆桌已达上限（{settings.MAX_CONCURRENT_FORUMS}），请先结束其他圆桌"
+            )
 
         task = asyncio.create_task(self._run_forum_loop(forum_id, ablation_flags))
         self.running_tasks[forum_id] = task
@@ -438,6 +513,26 @@ class ForumScheduler:
                     logger.error(f"Forum {forum_id} not found.")
                     return
 
+                # Pre-check the forum creator's prepaid balance before the debate runs.
+                creator_id = getattr(forum, "creator_id", None)
+                if isinstance(creator_id, int) and creator_id > 0:
+                    try:
+                        start_est = credit_service.estimate_from_text(
+                            db, input_text=getattr(forum, "topic", "") or "", output_text="", vision_count=0
+                        )
+                        credit_service.check_sufficient(db, creator_id, start_est["cost"])
+                    except InsufficientCreditsError as exc:
+                        update_forum(db, forum_id, status="closed")
+                        await self._broadcast_system_log(
+                            forum_id,
+                            f"发起人积分余额不足（当前 {exc.balance}，预计需要 {exc.required}），论坛无法开启。",
+                            "error",
+                        )
+                        return
+                    except Exception as credit_exc:
+                        # Never let a credit subsystem hiccup block the debate startup.
+                        logger.warning("Credit pre-check skipped for forum %s: %s", forum_id, credit_exc)
+
                 # Update status to Running
                 update_forum(db, forum_id, status="running")
                 
@@ -458,14 +553,22 @@ class ForumScheduler:
                 persona = p_db.persona
                 if not persona:
                     continue
-                
+
+                try:
+                    knowledge_text = build_knowledge_block(db, p_db.persona_id)
+                except Exception as knowledge_exc:
+                    logger.warning("Failed to load knowledge for persona %s: %s", p_db.persona_id, knowledge_exc)
+                    knowledge_text = ""
+
                 persona_dict = {
+                    "id": p_db.persona_id,
                     "name": persona.name,
                     "title": persona.title,
                     "bio": persona.bio,
                     "theories": persona.theories,
                     "stance": persona.stance,
-                    "system_prompt": persona.system_prompt
+                    "system_prompt": persona.system_prompt,
+                    "knowledge_text": knowledge_text
                 }
                 
                 agent = ParticipantAgent(
@@ -658,6 +761,77 @@ class ForumScheduler:
                     speaker_queue.clear()
                     continue
 
+                # ============================================================
+                # RAAMS 风险前置门控：风险优先级高于普通讨论逻辑
+                # ============================================================
+                gate_start = time.time()
+                risk_user_text = ""
+                for m in reversed(messages):
+                    if m.persona_id is None and m.moderator_id is None and m.speaker_name != moderator.name:
+                        risk_user_text = m.content
+                        break
+
+                risk = assess_risk(risk_user_text) if risk_user_text else None
+                risk_level = risk.risk_level if risk else "L0"
+                risk_signals = risk.signals if risk else []
+                gate_action = "normal"
+                gate_latency_ms = int((time.time() - gate_start) * 1000)
+
+                if risk and not ablation_flags.get("no_risk_gate"):
+                    if risk.risk_level == "L3":
+                        # 高风险：绕过普通候选排序，安全角色直接接管
+                        gate_action = "crisis_lock"
+                        await self._broadcast_system_log(
+                            forum_id,
+                            f"检测到高风险信号 {risk_signals}，安全门控接管，暂停普通讨论。",
+                            "warning",
+                        )
+                        crisis_text = build_crisis_reply(risk, risk_user_text)
+                        with self._get_db() as gdb:
+                            crisis_msg = create_message(gdb, MessageCreate(
+                                forum_id=forum_id,
+                                moderator_id=forum.moderator_id,
+                                speaker_name="安全守门",
+                                content=crisis_text,
+                                turn_count=0,
+                            ))
+                            create_round_record(gdb, {
+                                "forum_id": forum_id,
+                                "turn_count": turn_count,
+                                "risk_level": risk_level,
+                                "risk_signals": risk_signals,
+                                "escalated": True,
+                                "gate_action": gate_action,
+                                "turn_mode": turn_mode,
+                                "uncertainty": "high",
+                                "interrupted_by_user": True,
+                                "selected_speaker": "安全守门",
+                                "candidates": [],
+                                "speak_tokens": 0,
+                                "latency_ms": gate_latency_ms,
+                                "ablation": ablation_flags,
+                            })
+                        await self._broadcast_message(
+                            forum_id, "安全守门", crisis_text, None,
+                            forum.moderator_id, str(uuid.uuid4()), crisis_msg.id,
+                        )
+                        await self._broadcast_system_log(forum_id, crisis_text, "speech", "安全守门")
+                        speaker_queue.clear()
+                        continue
+                    elif risk.risk_level == "L2":
+                        gate_action = "stabilize"
+                        await self._broadcast_system_log(
+                            forum_id,
+                            f"检测到潜在风险信号 {risk_signals}，优先稳定情绪并澄清。",
+                            "warning",
+                        )
+                        context_str += (
+                            "\n\n【安全门控提示】当前用户可能处于脆弱状态，"
+                            "优先以稳定、澄清、支持的方式回应，避免讨论危险细节。"
+                        )
+                elif ablation_flags.get("no_risk_gate"):
+                    gate_action = "gate_disabled"
+
                 speaker = None
                 thoughts_map = {}
                 
@@ -772,6 +946,7 @@ class ForumScheduler:
                 # while saving thoughts in background.
                 
                 speaker_candidates = []
+                candidate_score_map = {}
                 # Simple in-memory processing first
                 for agent, thought in think_results:
                     if thought:
@@ -784,8 +959,13 @@ class ForumScheduler:
                                 turn_count,
                                 batch_spoken_agents,
                                 turn_mode=turn_mode,
+                                n_participants=n_participants,
+                                ablation_flags=ablation_flags,
                             )
                             speaker_candidates.append((agent, score))
+                            candidate_score_map[agent.name] = score
+                        else:
+                            candidate_score_map[agent.name] = 0
 
                 speaker_candidates.sort(
                     key=lambda item: (
@@ -877,6 +1057,8 @@ class ForumScheduler:
                         batch_spoken_agents,
                         turn_count,
                         fallback_thought=fallback_thought,
+                        n_participants=n_participants,
+                        ablation_flags=ablation_flags,
                     )
 
                     if not speaker and participants:
@@ -932,8 +1114,50 @@ class ForumScheduler:
                         ablation_flags=ablation_flags,
                         turn_count=turn_count,
                     )
-                
+
+                # ---- RAAMS 轮次调度记录落库（普通轮次）----
+                round_candidates = []
+                for ag, th in think_results:
+                    if not th:
+                        continue
+                    round_candidates.append({
+                        "agent_name": ag.name,
+                        "decision": th.get("action", "listen"),
+                        "style": th.get("style", "support"),
+                        "score_total": candidate_score_map.get(ag.name, 0),
+                        "selected": bool(speaker and ag.name == speaker.name),
+                    })
+                uncertainty = "mid" if turn_mode in {"answer", "challenge"} else "low"
+                with self._get_db() as rdb:
+                    create_round_record(rdb, {
+                        "forum_id": forum_id,
+                        "turn_count": turn_count,
+                        "risk_level": risk_level,
+                        "risk_signals": risk_signals,
+                        "escalated": gate_action == "stabilize",
+                        "gate_action": gate_action,
+                        "turn_mode": turn_mode,
+                        "uncertainty": uncertainty,
+                        "interrupted_by_user": has_user_msgs,
+                        "selected_speaker": speaker.name if speaker else None,
+                        "candidates": round_candidates,
+                        "speak_tokens": 0,
+                        "latency_ms": int((time.time() - gate_start) * 1000),
+                        "ablation": ablation_flags,
+                    })
+
                 turn_count += 1
+
+                # 成本闸门：轮数达到上限后主动收尾，避免无限调用 LLM
+                if turn_count >= max(1, settings.MAX_FORUM_TURNS):
+                    logger.warning(f"Forum {forum_id} reached MAX_FORUM_TURNS={turn_count}; closing.")
+                    try:
+                        with self._get_db() as db:
+                            update_forum(db, forum_id, {"status": "closed"})
+                        await self._broadcast_system_log(forum_id, "圆桌已达到最大轮数，自动结束。", "info")
+                    except Exception as cap_exc:
+                        logger.warning(f"Failed to close forum {forum_id} on turn cap: {cap_exc}")
+                    break
                 
                 # Periodic WAL checkpoint
                 if turn_count % 10 == 0:
@@ -1055,10 +1279,14 @@ class ForumScheduler:
         stream_id = str(uuid.uuid4())
         ablation_flags = ablation_flags or {}
         
-        with self._get_db() as db:
-            participants = get_forum_participants(db, forum_id)
-            p_db = next((p for p in participants if p.persona.name == agent.name), None)
-            persona_id = p_db.persona_id if p_db else None
+        # Reuse the persona_id cached at setup; only fall back to a DB lookup
+        # when the agent was created outside the normal forum setup path.
+        persona_id = getattr(agent, "persona_id", None)
+        if persona_id is None:
+            with self._get_db() as db:
+                participants = get_forum_participants(db, forum_id)
+                p_db = next((p for p in participants if p.persona.name == agent.name), None)
+                persona_id = p_db.persona_id if p_db else None
 
         # Optimization: No need to log "thinking" again if thought is already done.
         # But we might need to do the actual LLM call for speaking now.
@@ -1128,6 +1356,25 @@ class ForumScheduler:
                     thought=thought_content,
                     turn_count=0
                 ))
+                try:
+                    frow = fetch_one(db.execute("SELECT creator_id FROM forums WHERE id = ?", [forum_id]))
+                    creator_id = getattr(frow, "creator_id", None) if frow else None
+                    if isinstance(creator_id, int) and creator_id > 0:
+                        usage = credit_service.estimate_from_text(
+                            db, input_text=context, output_text=content, vision_count=0
+                        )
+                        credit_service.charge(
+                            db,
+                            creator_id,
+                            category="forum",
+                            tokens_input=usage["tokens_input"],
+                            tokens_output=usage["tokens_output"],
+                            reference_type="forum",
+                            reference_id=forum_id,
+                            note=f"圆桌发言-{agent.name}",
+                        )
+                except Exception as charge_exc:
+                    logger.warning("Forum credit charge failed: %s", charge_exc)
 
             if turn_count is not None:
                 agent.last_spoken_turn = turn_count

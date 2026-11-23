@@ -10,13 +10,14 @@ from app.schemas import (
     ArtifactCreate,
     TaskRunCreate,
     TaskRunUpdate,
+    KnowledgeDocCreate,
 )
 from app.core.hashing import Hasher
 from app.db.client import fetch_one, fetch_all, RowObject, db_transaction, db_execute_commit
 from app.core.cache import cache_service
 import json
 import logging
-from typing import List, Optional, Any
+from typing import List, Optional, Any, Dict
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
@@ -100,6 +101,28 @@ def create_user(db: Any, user: UserCreate):
         return new_user
     except Exception as e:
         logger.error(f"Error creating user: {e}")
+        raise
+
+
+def update_user_avatar(db: Any, user_id: int, avatar: Optional[str], avatar_kind: str = "custom"):
+    """Persist a user's avatar and refresh the cached user row."""
+    try:
+        rs = db_execute_commit(
+            db,
+            """
+            UPDATE users
+            SET avatar = ?, avatar_kind = ?, avatar_updated_at = ?
+            WHERE id = ?
+            RETURNING *
+            """,
+            [avatar, avatar_kind, datetime.now() if avatar else None, user_id],
+        )
+        user = fetch_one(rs)
+        if user:
+            cache_service.set_cache(user_cache_key(user.username), user.__dict__, expire=3600)
+        return user
+    except Exception as e:
+        logger.error(f"Error updating avatar for user {user_id}: {e}")
         raise
 
 # --- Persona ---
@@ -733,5 +756,360 @@ def clear_chat_history(db, user_id: int, persona_id: int):
     except Exception as e:
         logger.error(f"Error clearing chat history: {e}")
         raise
+
+
+# --- Persona Knowledge Base ---
+KNOWLEDGE_MAX_CHARS = 12000
+
+
+def create_knowledge_doc(db, doc: KnowledgeDocCreate):
+    try:
+        extracted_text = doc.extracted_text or ""
+        char_count = doc.char_count or len(extracted_text)
+        created_at = datetime.now()
+        rs = db_execute_commit(
+            db,
+            """
+            INSERT INTO persona_knowledge (
+                persona_id, owner_id, file_name, mime_type, size, storage_url,
+                sha256, extracted_text, char_count, status, meta, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            RETURNING *
+            """,
+            [
+                doc.persona_id,
+                doc.owner_id,
+                doc.file_name,
+                doc.mime_type,
+                doc.size,
+                doc.storage_url,
+                doc.sha256,
+                extracted_text,
+                char_count,
+                doc.status or "ready",
+                json.dumps(doc.meta or {}),
+                created_at,
+            ],
+        )
+        return fetch_one(rs)
+    except Exception as e:
+        logger.error(f"Error creating knowledge document: {e}")
+        raise
+
+
+def list_knowledge_docs(db, persona_id: int):
+    rs = db.execute(
+        "SELECT * FROM persona_knowledge WHERE persona_id = ? ORDER BY created_at ASC",
+        [persona_id],
+    )
+    return fetch_all(rs)
+
+
+def get_knowledge_doc(db, doc_id: int):
+    rs = db.execute("SELECT * FROM persona_knowledge WHERE id = ?", [doc_id])
+    return fetch_one(rs)
+
+
+def delete_knowledge_doc(db, doc_id: int):
+    try:
+        rs = db_execute_commit(
+            db,
+            "DELETE FROM persona_knowledge WHERE id = ? RETURNING *",
+            [doc_id],
+        )
+        return fetch_one(rs) is not None
+    except Exception as e:
+        logger.error(f"Error deleting knowledge document {doc_id}: {e}")
+        raise
+
+
+def list_knowledge_texts(db, persona_id: int) -> List[Dict[str, Any]]:
+    docs = list_knowledge_docs(db, persona_id)
+    result: List[Dict[str, Any]] = []
+    for doc in docs:
+        result.append(
+            {
+                "file_name": getattr(doc, "file_name", ""),
+                "text": getattr(doc, "extracted_text", None) or "",
+                "char_count": getattr(doc, "char_count", 0) or 0,
+            }
+        )
+    return result
+
+
+def build_knowledge_block(
+    db,
+    persona_id: int,
+    max_chars: int = KNOWLEDGE_MAX_CHARS,
+) -> str:
+    """Assemble the injected knowledge context for an agent's prompt.
+
+    Returns an empty string when the persona has no readable knowledge files.
+    """
+    items = list_knowledge_texts(db, persona_id)
+    parts: List[str] = []
+    total = 0
+    for item in items:
+        text = str(item.get("text") or "").strip()
+        if not text:
+            continue
+        remaining = max_chars - total
+        if remaining <= 0:
+            break
+        header = f"【资料：{item['file_name']}】"
+        body = text[:remaining]
+        parts.append(f"{header}\n{body}")
+        total += len(header) + len(body)
+    if not parts:
+        return ""
+    return "\n\n".join(parts)
+
+
+# --- Team (multi-agent group chat) ---
+def _team_member_rows(db, team_id: int):
+    query = """
+    SELECT tm.persona_id, tm.role, tm.joined_at,
+           p.name AS persona_name, p.title AS persona_title, p.bio AS persona_bio,
+           p.avatar AS persona_avatar, p.system_prompt AS persona_system_prompt,
+           p.skills AS persona_skills, p.skill_policy AS persona_skill_policy,
+           p.modalities AS persona_modalities, p.owner_id AS persona_owner_id
+    FROM team_members tm
+    JOIN personas p ON tm.persona_id = p.id
+    WHERE tm.team_id = ?
+    ORDER BY tm.joined_at ASC, tm.id ASC
+    """
+    rs = db.execute(query, [team_id])
+    rows = fetch_all(rs)
+    results = []
+    for row in rows:
+        persona_data = {
+            "id": row.persona_id,
+            "name": row.persona_name,
+            "title": row.persona_title,
+            "bio": row.persona_bio,
+            "avatar": row.persona_avatar,
+            "system_prompt": row.persona_system_prompt,
+            "skills": _maybe_parse_json(row.persona_skills) or ["chat.reply"],
+            "skill_policy": _maybe_parse_json(row.persona_skill_policy) or {},
+            "modalities": _maybe_parse_json(row.persona_modalities) or ["text"],
+            "owner_id": row.persona_owner_id,
+        }
+        setattr(row, "persona", RowObject(persona_data))
+        results.append(row)
+    return results
+
+
+def create_team(db, owner_id: int, name: str, description: str, persona_ids: List[int]):
+    unique_pids = list(dict.fromkeys(int(pid) for pid in (persona_ids or [])))
+    with db_transaction(db) as tx:
+        rs = tx.execute(
+            """
+            INSERT INTO teams (owner_id, name, description, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            RETURNING *
+            """,
+            [owner_id, name, description or "", datetime.now(), datetime.now()],
+        )
+        new_team = fetch_one(rs)
+        for pid in unique_pids:
+            tx.execute(
+                """
+                INSERT INTO team_members (team_id, persona_id, role, joined_at)
+                VALUES (?, ?, 'member', ?)
+                ON CONFLICT (team_id, persona_id) DO NOTHING
+                """,
+                [new_team.id, pid, datetime.now()],
+            )
+        if hasattr(tx, "commit"):
+            tx.commit()
+        elif hasattr(db, "commit"):
+            db.commit()
+    return get_team(db, new_team.id)
+
+
+def get_team(db, team_id: int):
+    rs = db.execute("SELECT * FROM teams WHERE id = ?", [team_id])
+    team = fetch_one(rs)
+    if not team:
+        return None
+    setattr(team, "members", _team_member_rows(db, team_id))
+    return team
+
+
+def list_teams(db, owner_id: int):
+    rs = db.execute(
+        "SELECT * FROM teams WHERE owner_id = ? ORDER BY updated_at DESC, id DESC",
+        [owner_id],
+    )
+    teams = fetch_all(rs)
+    for team in teams:
+        setattr(team, "members", _team_member_rows(db, team.id))
+    return teams
+
+
+def add_team_members(db, team_id: int, persona_ids: List[int]):
+    unique_pids = list(dict.fromkeys(int(pid) for pid in (persona_ids or [])))
+    with db_transaction(db) as tx:
+        for pid in unique_pids:
+            tx.execute(
+                """
+                INSERT INTO team_members (team_id, persona_id, role, joined_at)
+                VALUES (?, ?, 'member', ?)
+                ON CONFLICT (team_id, persona_id) DO NOTHING
+                """,
+                [team_id, pid, datetime.now()],
+            )
+        tx.execute("UPDATE teams SET updated_at = ? WHERE id = ?", [datetime.now(), team_id])
+        if hasattr(tx, "commit"):
+            tx.commit()
+        elif hasattr(db, "commit"):
+            db.commit()
+    return get_team(db, team_id)
+
+
+def remove_team_member(db, team_id: int, persona_id: int):
+    try:
+        rs = db_execute_commit(
+            db,
+            "DELETE FROM team_members WHERE team_id = ? AND persona_id = ? RETURNING id",
+            [team_id, persona_id],
+        )
+        db_execute_commit(db, "UPDATE teams SET updated_at = ? WHERE id = ?", [datetime.now(), team_id])
+        return fetch_one(rs) is not None
+    except Exception as e:
+        logger.error(f"Error removing team member {persona_id}: {e}")
+        raise
+
+
+def delete_team(db, team_id: int):
+    try:
+        with db_transaction(db) as tx:
+            tx.execute("DELETE FROM team_messages WHERE team_id = ?", [team_id])
+            tx.execute("DELETE FROM team_members WHERE team_id = ?", [team_id])
+            rs = tx.execute("DELETE FROM teams WHERE id = ?", [team_id])
+            affected = rs.rows_affected if hasattr(rs, "rows_affected") else -1
+            if hasattr(tx, "commit"):
+                tx.commit()
+            elif hasattr(db, "commit"):
+                db.commit()
+        return affected > 0 if affected != -1 else True
+    except Exception as e:
+        logger.error(f"Error deleting team {team_id}: {e}")
+        raise
+
+
+def save_team_message(
+    db,
+    team_id: int,
+    sender_type: str,
+    speaker_name: str,
+    content: str,
+    user_id: Optional[int] = None,
+    persona_id: Optional[int] = None,
+    attachments: Optional[List[Any]] = None,
+    mentioned_persona_ids: Optional[List[int]] = None,
+    message_type: str = "text",
+):
+    try:
+        rs = db_execute_commit(
+            db,
+            """
+            INSERT INTO team_messages (
+                team_id, sender_type, user_id, persona_id, speaker_name, content,
+                attachments, mentioned_persona_ids, message_type, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            RETURNING *
+            """,
+            [
+                team_id,
+                sender_type,
+                user_id,
+                persona_id,
+                speaker_name,
+                content,
+                json.dumps(attachments or []),
+                json.dumps(mentioned_persona_ids or []),
+                message_type,
+                datetime.now(),
+            ],
+        )
+        return fetch_one(rs)
+    except Exception as e:
+        logger.error(f"Error saving team message: {e}")
+        raise
+
+
+def get_team_messages(db, team_id: int):
+    rs = db.execute(
+        "SELECT * FROM team_messages WHERE team_id = ? ORDER BY created_at ASC, id ASC",
+        [team_id],
+    )
+    messages = fetch_all(rs)
+    for message in messages:
+        message.attachments = _maybe_parse_json(message.attachments) or []
+        message.mentioned_persona_ids = _maybe_parse_json(message.mentioned_persona_ids) or []
+    return messages
+
+
+def log_decision(
+    db,
+    scope: str,
+    label: str,
+    confidence: float,
+    layer: str,
+    reference_id: Optional[int] = None,
+    user_id: Optional[int] = None,
+    persona_id: Optional[int] = None,
+    text: str = "",
+    keyword: Optional[str] = None,
+    elapsed_ms: Optional[float] = None,
+):
+    """Persist one router decision for the audit / explainability panel."""
+    clipped_text = str(text or "")[:500]
+    try:
+        rs = db_execute_commit(
+            db,
+            """
+            INSERT INTO decision_logs (
+                scope, reference_id, user_id, persona_id, text,
+                label, confidence, layer, keyword, elapsed_ms, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            RETURNING *
+            """,
+            [
+                scope,
+                reference_id,
+                user_id,
+                persona_id,
+                clipped_text,
+                label,
+                confidence,
+                layer,
+                keyword,
+                elapsed_ms,
+                datetime.now(),
+            ],
+        )
+        return fetch_one(rs)
+    except Exception as e:
+        logger.error(f"Error logging decision: {e}")
+        return None
+
+
+def list_decision_logs(db, limit: int = 50, scope: Optional[str] = None):
+    if scope:
+        rs = db.execute(
+            "SELECT * FROM decision_logs WHERE scope = ? ORDER BY created_at DESC, id DESC LIMIT ?",
+            [scope, limit],
+        )
+    else:
+        rs = db.execute(
+            "SELECT * FROM decision_logs ORDER BY created_at DESC, id DESC LIMIT ?",
+            [limit],
+        )
+    return fetch_all(rs)
 
 

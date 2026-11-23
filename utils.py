@@ -15,6 +15,7 @@ except ImportError:
     # Actually, let's just use Exception as fallback if not found.
     class APIError(Exception): pass
 from app.core.config import settings
+from app.services import system_config_service as _config
 import logging
 
 logger = logging.getLogger(__name__)
@@ -53,7 +54,7 @@ def _looks_like_placeholder_api_key(key: str) -> bool:
 
 
 def _build_llm_client() -> ZhipuAI:
-    api_key = _configured_api_key()
+    api_key = _config.resolved_api_key() or _configured_api_key()
     if not api_key:
         raise LLMServiceError(
             kind="auth",
@@ -68,8 +69,25 @@ def _build_llm_client() -> ZhipuAI:
 
     return ZhipuAI(
         api_key=api_key,
-        base_url=settings.final_base_url,
+        base_url=_config.resolved_base_url(),
     )
+
+
+def _sdk_supports_param(client: ZhipuAI, name: str) -> bool:
+    """Return True when the installed zhipuai SDK accepts the given argument."""
+    import inspect
+
+    try:
+        params = inspect.signature(client.chat.completions.create).parameters
+    except (TypeError, ValueError):
+        return False
+    if name in params:
+        return True
+    return any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values())
+
+
+def _sdk_supports_route(client: ZhipuAI) -> bool:
+    return _sdk_supports_param(client, "route")
 
 
 class LLMServiceError(RuntimeError):
@@ -251,39 +269,49 @@ def get_chat_completion(
     raise_error=False,
     use_vision=False,
     route=None,
+    max_tokens=4096,
+    temperature=0.8,
+    top_p=0.7,
+    backoff_base=1.0,
 ):
     """
     Wrapper for ZhipuAI chat completion with retry logic and timeout.
-    
+
     Args:
         callback: Optional async function(error_msg: str) to report errors to system log
         raise_error: If True, raise the last exception instead of returning None when all retries fail.
         use_vision: If True, use volcanic engine visual model for multimodal input
         route: Optional provider route hint for specialized model routing.
+        max_tokens: Cap on generated tokens; decision/JSON calls should pass a small value.
+        temperature: Sampling temperature; lower for deterministic decisions.
+        top_p: Nucleus sampling.
+        backoff_base: Multiplier for retry backoff delay (seconds = backoff_base * attempt).
+        json_mode: Request structured JSON output via response_format when supported.
     """
     last_error = None
     
     # 如果是多模态请求且配置了火山引擎API，使用火山引擎视觉模型
-    if use_vision and settings.VOLC_API_KEY and not _vision_temporarily_disabled():
+    vision_api_key = _config.resolved_vision_api_key()
+    if use_vision and vision_api_key and not _vision_temporarily_disabled():
         vision_attempt = 0
         while vision_attempt < max_retries:
             try:
                 headers = {
-                    "Authorization": f"Bearer {settings.VOLC_API_KEY}",
+                    "Authorization": f"Bearer {vision_api_key}",
                     "Content-Type": "application/json"
                 }
-                
+
                 payload = {
-                    "model": settings.VOLC_VISION_MODEL,
+                    "model": _config.resolved_vision_model(),
                     "messages": messages,
                     "stream": stream,
-                    "temperature": 0.8,
-                    "max_tokens": 4096,
-                    "top_p": 0.7
+                    "temperature": temperature,
+                    "max_tokens": max_tokens,
+                    "top_p": top_p
                 }
-                
+
                 response = requests.post(
-                    f"{settings.VOLC_BASE_URL}/chat/completions",
+                    f"{_config.resolved_vision_base_url()}/chat/completions",
                     headers=headers,
                     json=payload,
                     timeout=timeout,
@@ -336,30 +364,43 @@ def get_chat_completion(
     client = _build_llm_client()
     text_messages = _sanitize_messages_for_text_model(messages)
     route_kwargs = {"route": route} if route else {}
+    if route_kwargs and not _sdk_supports_route(client):
+        logger.warning(
+            "当前 zhipuai SDK 不支持 route 参数，忽略 route=%s 并使用默认路由。",
+            route,
+        )
+        route_kwargs = {}
+
+    extra_kwargs: dict = {}
+    if json_mode and _sdk_supports_param(client, "response_format"):
+        extra_kwargs["response_format"] = {"type": "json_object"}
+
     attempt = 0
     while attempt < max_retries:
         try:
             if stream:
                 return client.chat.completions.create(
-                    model=settings.MODEL_NAME,
+                    model=_config.resolved_model_name(),
                     messages=text_messages,
                     stream=True,
-                    temperature=0.8,
-                    max_tokens=4096,
-                    top_p=0.7,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    top_p=top_p,
                     timeout=timeout,
                     **route_kwargs,
+                    **extra_kwargs,
                 )
-            
+
             response = client.chat.completions.create(
-                model=settings.MODEL_NAME,
+                model=_config.resolved_model_name(),
                 messages=text_messages,
                 stream=False,
-                temperature=0.8,
-                max_tokens=4096,
-                top_p=0.7,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                top_p=top_p,
                 timeout=timeout,
                 **route_kwargs,
+                **extra_kwargs,
             )
             return response
             
@@ -392,7 +433,7 @@ def get_chat_completion(
             
         attempt += 1
         if attempt < max_retries:
-            time.sleep(1 + attempt) # Exponential backoff: 2s, 3s, 4s...
+            time.sleep(backoff_base * attempt)  # linear backoff: backoff_base, 2*backoff_base ...
             
     logger.error(f"Chat completion failed after {max_retries} attempts. Last error: {last_error}")
     

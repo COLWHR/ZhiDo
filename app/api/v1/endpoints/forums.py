@@ -12,6 +12,8 @@ from app.schemas import (
 from app.crud import get_forum, get_forum_messages, get_forum_participants
 from app.crud.crud_system_log import get_system_logs
 from app.api.deps import get_current_user, get_current_user_ws
+from app.core.security import create_ws_ticket
+from app.core.config import settings
 from app.core.websockets import manager
 from app.services.forum_service import ForumService
 from app.db.client import fetch_all, fetch_one, RowObject
@@ -219,6 +221,20 @@ def get_forum_logs(
 ):
     ensure_forum_access(db, forum_id, current_user)
     return get_system_logs(db, forum_id=forum_id)
+
+@router.post("/{forum_id}/ws-ticket")
+def create_forum_ws_ticket(
+    forum_id: int,
+    current_user: Annotated[Any, Depends(get_current_user)],
+    db: Any = Depends(get_db),
+):
+    """Issue a short-lived WebSocket ticket so the access token stays out of URLs."""
+    ensure_forum_access(db, forum_id, current_user)
+    return {
+        "ticket": create_ws_ticket(current_user.username, forum_id),
+        "expires_in": settings.WS_TICKET_EXPIRE_SECONDS,
+    }
+
 
 @router.websocket("/{forum_id}/ws")
 async def websocket_endpoint(

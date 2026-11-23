@@ -96,6 +96,7 @@ class ParticipantAgent(BaseAgent):
         self.bio = persona.get("bio", "")
         self.theories = persona.get("theories", [])
         self.stance = persona.get("stance", "中立")
+        self.knowledge_text = persona.get("knowledge_text", "") or ""
         self.priority = 100
         self.private_memory = PrivateMemory(n_participants)
         self.has_spoken = False
@@ -103,6 +104,8 @@ class ParticipantAgent(BaseAgent):
         self.speech_count = 0
         self.theme = theme
         self.ablation_flags = ablation_flags or {}
+        # Cached after forum setup so speaking does not re-query participants.
+        self.persona_id = persona.get("id")
 
     def _normalize_reply_style(self, value, fallback_text=""):
         raw = str(value or "").strip().lower()
@@ -130,6 +133,15 @@ class ParticipantAgent(BaseAgent):
             return "synthesis"
         return "support"
 
+    def _knowledge_section(self) -> str:
+        if not self.knowledge_text:
+            return ""
+        return (
+            "\n【你的专属知识库资料】\n"
+            f"{self.knowledge_text}\n"
+            "判断与发言时优先参考以上资料；资料未覆盖的内容再依靠你的通用认知，不要编造资料中没有的信息。\n"
+        )
+
     def think(self, context):
         """
         Fast Thinking: Analyze context using Bio and Theories.
@@ -155,7 +167,9 @@ class ParticipantAgent(BaseAgent):
 【你的生平与理论】
 生平: {self.bio}
 理论武库: {', '.join(self.theories)}
-
+"""
+        prompt += self._knowledge_section()
+        prompt += f"""
 请进行“快思考”，判断自己此刻是否应该申请发言。
 最高优先级：优先回应当前观众的问题和意图，确保发言严格围绕本次圆桌主题，不要被无关内容带偏。
 不要因为个性而拒绝回答观众的问题，不要使用空泛的官方逻辑，不要和稀泥，不要攻击他人。
@@ -178,7 +192,18 @@ class ParticipantAgent(BaseAgent):
             {"role": "user", "content": prompt},
         ]
 
-        response = get_chat_completion(messages)
+        # Decision call: short JSON, low temperature, tight timeout and a single
+        # retry so the speaker-selection step does not stall the round.
+        response = get_chat_completion(
+            messages,
+            stream=False,
+            json_mode=True,
+            max_tokens=320,
+            temperature=0.3,
+            timeout=12,
+            max_retries=1,
+            backoff_base=0.3,
+        )
         if response:
             content = response.choices[0].message.content
             return self._parse_think_response(content)
@@ -280,6 +305,8 @@ class ParticipantAgent(BaseAgent):
 {my_memory}
 {my_speeches}
 """
+
+        prompt += self._knowledge_section()
 
         prompt += f"""
 【你的状态】

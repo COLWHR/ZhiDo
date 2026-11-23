@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import logging
+import mimetypes
 import os
+import re
 import uuid
+from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
@@ -12,13 +15,49 @@ from fastapi.staticfiles import StaticFiles
 
 from app.api.v1.api import api_router
 from app.core.config import settings
+from app.core.ratelimit import RateLimitMiddleware, SecurityHeadersMiddleware
 from app.db.session import db_manager
 from utils import LLMServiceError
 
-logging.basicConfig(
-    level=logging.DEBUG,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-)
+# Some Windows/Python builds do not map WebP in the system MIME table, which makes
+# StaticFiles and FileResponse send avatars as application/octet-stream.
+mimetypes.add_type("image/webp", ".webp")
+
+
+class _SecretRedactionFilter(logging.Filter):
+    """Keep JWTs / api keys out of application logs."""
+
+    _patterns = (
+        re.compile(r"(token=)[^&\s\"']+", re.IGNORECASE),
+        re.compile(r"(Bearer\s+)[A-Za-z0-9._\-]+", re.IGNORECASE),
+        re.compile(r"(\"?(?:access_token|refresh_token|password|api_key)\"?\s*[:=]\s*\")[^\"]+", re.IGNORECASE),
+    )
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            message = record.getMessage()
+        except Exception:
+            return True
+        for pattern in self._patterns:
+            message = pattern.sub(lambda m: m.group(1) + "***", message)
+        record.msg = message
+        record.args = ()
+        return True
+
+
+def _configure_logging() -> None:
+    level = getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO)
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    )
+    root = logging.getLogger()
+    root.addFilter(_SecretRedactionFilter())
+    for handler in root.handlers:
+        handler.addFilter(_SecretRedactionFilter())
+
+
+_configure_logging()
 logger = logging.getLogger(__name__)
 
 
@@ -111,7 +150,26 @@ app.add_middleware(
     allow_headers=["Authorization", "Content-Type", "Accept", "Origin", "X-Requested-With", "Cache-Control"],
 )
 
+app.add_middleware(SecurityHeadersMiddleware)
+app.add_middleware(RateLimitMiddleware)
+
 app.include_router(api_router, prefix=settings.API_V1_STR)
+
+
+@app.on_event("startup")
+async def _reconcile_forum_state():
+    """Forums left 'running' by a previous process can never finish on their own."""
+    try:
+        from app.services.forum_service import reconcile_running_forums
+        from app.services.system_config_service import refresh_config_cache
+
+        conn = db_manager.get_connection()
+        refresh_config_cache(conn)
+        closed = reconcile_running_forums(conn)
+        if closed:
+            logger.warning("Reconciled %s stale running forum(s) to closed on startup.", closed)
+    except Exception as exc:
+        logger.warning("Startup reconciliation skipped: %s", exc)
 
 base_dir = os.path.dirname(os.path.abspath(__file__))
 root_dir = os.path.dirname(base_dir)
@@ -141,8 +199,14 @@ if os.path.exists(frontend_dist):
         if full_path.startswith("api"):
             return JSONResponse(status_code=404, content={"detail": "API endpoint not found"})
 
-        file_path = os.path.join(frontend_dist, full_path)
-        if os.path.exists(file_path) and os.path.isfile(file_path):
+        dist_root = Path(frontend_dist).resolve()
+        try:
+            file_path = (dist_root / full_path).resolve()
+        except (OSError, ValueError):
+            file_path = dist_root / "__invalid__"
+
+        # 只允许命中 dist 目录内的真实文件，防止 ../ 穿越读取项目源码或 .env
+        if file_path.is_relative_to(dist_root) and file_path.is_file():
             return FileResponse(file_path)
 
         index_path = os.path.join(frontend_dist, "index.html")

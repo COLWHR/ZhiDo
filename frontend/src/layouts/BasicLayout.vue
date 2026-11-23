@@ -42,6 +42,23 @@
               <clock-circle-outlined class="nav-icon" />
               <span>时空之门</span>
           </a-menu-item>
+
+          <a-menu-item key="teams" @click="navigateTo('/teams')" class="nav-item">
+              <solution-outlined class="nav-icon" />
+              <span>我的团队</span>
+          </a-menu-item>
+
+          <!-- 渡心功能暂隐藏：后续恢复时取消下方注释即可
+          <a-menu-item key="duxin" data-test="nav-duxin" @click="navigateTo('/duxin')" class="nav-item">
+              <heart-outlined class="nav-icon" />
+              <span>渡心</span>
+          </a-menu-item>
+          -->
+
+          <a-menu-item v-if="isAdmin" key="admin" @click="navigateTo('/admin/overview')" class="nav-item">
+              <setting-outlined class="nav-icon" />
+              <span>管理后台</span>
+          </a-menu-item>
         </a-menu>
 
         <div class="profile-dock">
@@ -54,9 +71,13 @@
             <template #content>
               <div class="profile-panel">
                 <div class="profile-panel-header">
-                  <a-avatar :size="52" class="profile-panel-avatar">
-                    {{ userInitial }}
-                  </a-avatar>
+                  <IdentityAvatar
+                    kind="user"
+                    :entity="authStore.user"
+                    :size="52"
+                    shape="circle"
+                    class="profile-panel-avatar"
+                  />
                   <div>
                     <div class="profile-panel-name">{{ displayName }}</div>
                     <div class="profile-panel-id">ID {{ userIdLabel }}</div>
@@ -71,8 +92,16 @@
                     <span>会话</span>
                     <strong>{{ authStore.token ? '已连接' : '未登录' }}</strong>
                   </div>
+                  <div>
+                    <span>积分</span>
+                    <strong>{{ balance === null ? '-' : balance }}</strong>
+                  </div>
                 </div>
                 <div class="profile-panel-actions">
+                  <a-button block type="primary" data-test="profile-edit-avatar" @click="profileModalOpen = true">
+                    <user-outlined />
+                    个人资料 / 更换头像
+                  </a-button>
                   <a-button block @click="navigateTo('/dashboard')">
                     <home-outlined />
                     返回首页
@@ -94,12 +123,17 @@
               :class="{ collapsed }"
               data-test="sidebar-profile"
             >
-              <a-avatar :size="collapsed ? 34 : 42" class="profile-avatar">
-                {{ userInitial }}
-              </a-avatar>
+              <IdentityAvatar
+                kind="user"
+                :entity="authStore.user"
+                :size="collapsed ? 34 : 42"
+                shape="circle"
+                class="profile-avatar"
+              />
               <span v-if="!collapsed" class="profile-meta">
                 <strong>{{ displayName }}</strong>
                 <em>ID {{ userIdLabel }}</em>
+                <em v-if="balance !== null" class="profile-credits">积分 {{ balance }}</em>
               </span>
               <right-outlined v-if="!collapsed" class="profile-arrow" />
             </button>
@@ -116,22 +150,30 @@
       </a-layout-content>
     </a-layout>
   </a-layout>
+
+  <ProfileAvatarModal v-model:open="profileModalOpen" />
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
-import { getAvatarInitial } from '@/utils/avatar'
+import IdentityAvatar from '@/components/identity/IdentityAvatar.vue'
+import ProfileAvatarModal from '@/components/identity/ProfileAvatarModal.vue'
+import { creditsApi } from '@/api/admin'
 import {
   DashboardOutlined,
   TeamOutlined,
   AppstoreOutlined,
   ToolOutlined,
   ClockCircleOutlined,
+  SolutionOutlined,
+  // HeartOutlined, // 渡心暂隐藏，恢复时取消注释
   LogoutOutlined,
   RightOutlined,
-  HomeOutlined
+  HomeOutlined,
+  UserOutlined,
+  SettingOutlined
 } from '@ant-design/icons-vue'
 
 const route = useRoute()
@@ -139,10 +181,24 @@ const router = useRouter()
 const authStore = useAuthStore()
 const collapsed = ref(false)
 const profileOpen = ref(false)
+const profileModalOpen = ref(false)
+const balance = ref<number | null>(null)
 
 const displayName = computed(() => authStore.user?.username || '未登录用户')
-const userInitial = computed(() => getAvatarInitial(displayName.value, 'U'))
 const userIdLabel = computed(() => authStore.user?.id ?? '-')
+const isAdmin = computed(() => ['admin', 'god'].includes(authStore.user?.role || ''))
+
+const refreshBalance = async () => {
+  if (!authStore.token) return
+  try {
+    const data = await creditsApi.my()
+    balance.value = data.balance
+  } catch {
+    balance.value = null
+  }
+}
+
+onMounted(refreshBalance)
 const roleLabel = computed(() => {
   switch (authStore.user?.role) {
     case 'admin': return '管理员'
@@ -169,6 +225,9 @@ const selectedKeys = computed(() => {
   if (route.path.startsWith('/assistants/skills')) return ['skills']
   if (route.path.startsWith('/assistants')) return ['assistants']
   if (route.path.startsWith('/time-gate')) return ['time-gate']
+  if (route.path.startsWith('/teams')) return ['teams']
+  if (route.path.startsWith('/duxin')) return ['duxin']
+  if (route.path.startsWith('/admin')) return ['admin']
   return []
 })
 
@@ -356,6 +415,11 @@ watch(() => authStore.token, (token) => {
   font-size: 11px;
   font-style: normal;
   margin-top: 4px;
+}
+
+.profile-credits {
+  color: #3bb36b !important;
+  font-weight: 600;
 }
 
 .profile-arrow {

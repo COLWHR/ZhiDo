@@ -65,7 +65,7 @@ DEFAULT_SKILL_CATALOG: list[dict[str, Any]] = [
         "params_schema": {},
         "permission_scope": ["write_artifact"],
         "cost_level": "high",
-        "status": "active",
+        "status": "beta",
     },
     {
         "skill_key": "file.read",
@@ -135,7 +135,7 @@ DEFAULT_SKILL_CATALOG: list[dict[str, Any]] = [
         "params_schema": {},
         "permission_scope": ["read_media"],
         "cost_level": "medium",
-        "status": "active",
+        "status": "beta",
     },
     {
         "skill_key": "video.analyze",
@@ -149,7 +149,7 @@ DEFAULT_SKILL_CATALOG: list[dict[str, Any]] = [
         "params_schema": {},
         "permission_scope": ["read_media"],
         "cost_level": "high",
-        "status": "active",
+        "status": "beta",
     },
     {
         "skill_key": "web.search",
@@ -163,7 +163,7 @@ DEFAULT_SKILL_CATALOG: list[dict[str, Any]] = [
         "params_schema": {},
         "permission_scope": ["network"],
         "cost_level": "medium",
-        "status": "active",
+        "status": "beta",
     },
     {
         "skill_key": "artifact.publish",
@@ -226,9 +226,32 @@ def is_textual_attachment(file_name: str, mime_type: Optional[str] = None) -> bo
     return name.endswith((".txt", ".md", ".csv", ".json", ".jsonl", ".xml", ".html", ".htm", ".py", ".ts", ".js", ".css", ".yml", ".yaml"))
 
 
-def _safe_storage_path(relative_path: str) -> Path:
-    relative = Path(relative_path.lstrip("/"))
-    return PROJECT_ROOT / relative
+def _safe_storage_path(relative_path: str) -> Optional[Path]:
+    """Resolve a stored attachment URL to a file inside the uploads directory.
+
+    Client-supplied storage_url values are untrusted: reject absolute paths,
+    drive letters and any path that escapes uploads/ (e.g. ../../.env).
+    """
+    raw = str(relative_path or "").strip()
+    if not raw or "\x00" in raw:
+        return None
+
+    candidate = Path(raw.lstrip("/"))
+    if candidate.is_absolute() or candidate.drive or candidate.anchor:
+        return None
+    if any(part == ".." for part in candidate.parts):
+        return None
+
+    try:
+        resolved = (PROJECT_ROOT / candidate).resolve()
+        uploads_root = UPLOADS_ROOT.resolve()
+    except OSError:
+        return None
+
+    if not resolved.is_relative_to(uploads_root):
+        logger.warning("Blocked attachment path outside uploads: %s", raw)
+        return None
+    return resolved
 
 
 def _load_docx_document():
@@ -313,7 +336,7 @@ def extract_attachment_text(attachment: Dict[str, Any]) -> str:
     if storage_url.startswith("http://") or storage_url.startswith("https://"):
         return ""
     path = _safe_storage_path(storage_url)
-    if not path.exists():
+    if path is None or not path.exists():
         return ""
     if path.stat().st_size > 10 * 1024 * 1024:
         return f"[file too large to inline: {path.name}]"

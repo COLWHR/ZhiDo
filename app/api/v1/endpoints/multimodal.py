@@ -17,14 +17,14 @@ from app.schemas import (
     TaskRunUpdate,
 )
 from app.crud import create_task_run, get_attachment, get_artifact, get_task_run, update_task_run
-from app.services.skill_runtime import PROJECT_ROOT
+from app.services.skill_runtime import _safe_storage_path
 
 router = APIRouter()
 
 
-def _safe_local_path(storage_url: str) -> Path:
-    rel = storage_url.lstrip("/")
-    return PROJECT_ROOT / rel
+def _safe_local_path(storage_url: str):
+    """Resolve only files under uploads/, never arbitrary project paths."""
+    return _safe_storage_path(storage_url)
 
 
 @router.get("/attachments/{attachment_id}", response_model=AttachmentResponse)
@@ -46,7 +46,7 @@ def download_attachment(attachment_id: int, db=Depends(get_db), current_user: An
         raise HTTPException(status_code=403, detail="Not authorized")
 
     path = _safe_local_path(attachment.storage_url)
-    if not path.exists():
+    if path is None or not path.exists():
         raise HTTPException(status_code=404, detail="File not found")
     return FileResponse(str(path), filename=attachment.file_name)
 
@@ -70,7 +70,7 @@ def download_artifact(artifact_id: int, db=Depends(get_db), current_user: Any = 
         raise HTTPException(status_code=403, detail="Not authorized")
 
     path = _safe_local_path(artifact.storage_url)
-    if not path.exists():
+    if path is None or not path.exists():
         raise HTTPException(status_code=404, detail="File not found")
     return FileResponse(str(path), filename=artifact.file_name)
 

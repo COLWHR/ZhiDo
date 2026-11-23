@@ -222,10 +222,7 @@
             >
               <template #option="{ label, avatar }">
                 <div class="select-option">
-                  <span class="option-avatar">
-                    <img v-if="getPersonaAvatarSrc(avatar)" :src="getPersonaAvatarSrc(avatar)" :alt="label" />
-                    <template v-else>{{ getAvatarInitial(label, '智') }}</template>
-                  </span>
+                  <IdentityAvatar kind="persona" :entity="{ name: label, avatar }" :size="28" shape="square" />
                   <span>{{ label }}</span>
                 </div>
               </template>
@@ -266,7 +263,8 @@ import { useForumStore } from '@/stores/forum'
 import { usePersonaStore } from '@/stores/persona'
 import { message } from 'ant-design-vue'
 import { ClockCircleOutlined, PlusOutlined, DeleteOutlined, ReloadOutlined } from '@ant-design/icons-vue'
-import { getAvatarInitial, isImageAvatar } from '@/utils/avatar'
+import { getAvatarInitial, resolveIdentityAvatar } from '@/utils/avatar'
+import IdentityAvatar from '@/components/identity/IdentityAvatar.vue'
 
 const authStore = useAuthStore()
 const forumStore = useForumStore()
@@ -290,10 +288,6 @@ const personaOptions = computed(() => {
     avatar: p.avatar
   }))
 })
-
-const getPersonaAvatarSrc = (avatar?: string) => {
-  return isImageAvatar(avatar) ? avatar : ''
-}
 
 const dateKey = (date: Date) => {
   const year = date.getFullYear()
@@ -359,7 +353,7 @@ const personaNodes = computed(() => {
       id: persona.id,
       name: persona.name,
       initial: getAvatarInitial(persona.name, '智'),
-      avatar: getPersonaAvatarSrc(persona.avatar),
+      avatar: resolveIdentityAvatar('persona', persona),
       x: 50 + Math.cos(angle) * 34,
       y: 50 + Math.sin(angle) * 34,
       radius: Math.min(8, 4.5 + participation)

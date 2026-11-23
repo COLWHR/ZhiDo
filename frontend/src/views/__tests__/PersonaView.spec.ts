@@ -85,7 +85,7 @@ describe('PersonaView', () => {
     expect(wrapper.text()).not.toContain('埃隆·马斯克')
   })
 
-  it('offers upload, AI generation, and initial fallback controls for persona avatars', async () => {
+  it('offers upload, AI illustration entry, and a discipline-matched portrait fallback', async () => {
     requestMock.get.mockResolvedValueOnce({ data: [] })
 
     const wrapper = mount(PersonaView, {
@@ -123,8 +123,15 @@ describe('PersonaView', () => {
     expect(wrapper.find('[data-test="persona-avatar-generate"]').exists()).toBe(true)
     expect(wrapper.find('[data-test="persona-avatar-clear"]').exists()).toBe(true)
 
+    const preview = wrapper.find('[data-test="persona-avatar-editor"] .identity-avatar img')
+    expect(preview.exists()).toBe(true)
+    expect(preview.attributes('src')).toMatch(
+      /^\/avatars\/ai\/(philosophy|psychology|technology|business|arts|humanities|counseling|general)-[1-8]\.webp$/,
+    )
+
     await wrapper.find('[data-test="persona-avatar-generate"]').trigger('click')
 
-    expect((wrapper.vm as any).formState.avatar).toMatch(/^data:image\/svg\+xml;charset=UTF-8,/)
+    // Generating a real illustration needs a saved persona, so nothing is set yet.
+    expect((wrapper.vm as any).formState.avatar).toBe('')
   })
 })

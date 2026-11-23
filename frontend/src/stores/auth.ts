@@ -19,6 +19,9 @@ interface User {
   id: number
   username: string
   role: string
+  avatar?: string | null
+  avatar_kind?: string | null
+  avatar_updated_at?: string | null
 }
 
 interface AuthState {
@@ -81,6 +84,18 @@ export const useAuthStore = defineStore('auth', {
       } else {
         this.user = getStoredUser()
       }
+    },
+
+    async refreshMe() {
+      const res = await request.get('/users/me', { headers: { 'Cache-Control': 'no-cache' } })
+      this.user = res.data
+      setAuthUser(res.data)
+      return this.user
+    },
+
+    setUser(user: User | null) {
+      this.user = user
+      setAuthUser(user)
     },
 
     async login(form: Record<string, string>) {

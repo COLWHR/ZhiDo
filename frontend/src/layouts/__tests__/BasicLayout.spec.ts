@@ -42,10 +42,12 @@ describe('BasicLayout navigation', () => {
     }
   })
 
-  it('does not show Duxin in the sidebar', async () => {
+  // 渡心功能暂隐藏：恢复侧边栏入口后取消下方 .skip
+  it.skip('shows Duxin in the sidebar', async () => {
     const wrapper = mountLayout()
 
-    expect(wrapper.find('[data-test="nav-duxin"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="nav-duxin"]').exists()).toBe(true)
+    expect(wrapper.text()).toContain('渡心')
   })
 
   it('does not show a separate forum entry in the sidebar', async () => {
@@ -61,24 +63,26 @@ describe('BasicLayout navigation', () => {
     expect(wrapper.text()).not.toContain('概览')
   })
 
-  it('shows the signed-in user as a bottom profile entry', async () => {
+  it('shows the signed-in user with a personal seal avatar', async () => {
     const wrapper = mountLayout()
 
     const profileButton = wrapper.find('[data-test="sidebar-profile"]')
     expect(profileButton.exists()).toBe(true)
-    expect(profileButton.find('img').exists()).toBe(false)
+    expect(profileButton.find('.identity-avatar img').exists()).toBe(true)
+    expect(profileButton.find('.identity-avatar img').attributes('src')).toMatch(
+      /^\/avatars\/ai\/(philosophy|psychology|technology|business|arts|humanities|counseling|general)-[1-8]\.webp$/
+    )
     expect(profileButton.text()).toContain('13555822359')
     expect(profileButton.text()).toContain('ID 42')
     expect(wrapper.find('[data-test="nav-logout"]').exists()).toBe(false)
   })
 
-  it('does not expose an avatar picker in the profile popover', async () => {
+  it('exposes a profile entry for changing the avatar', async () => {
     const wrapper = mountLayout()
 
     await wrapper.find('[data-test="sidebar-profile"]').trigger('click')
     await new Promise(resolve => setTimeout(resolve, 250))
 
-    expect(document.body.textContent).not.toContain('头像形象')
-    expect(document.body.querySelector('[data-test="profile-avatar-picker"]')).toBeNull()
+    expect(document.body.querySelector('[data-test="profile-edit-avatar"]')).not.toBeNull()
   })
 })

@@ -8,21 +8,24 @@ from app.schemas.duxin import DuxinRiskAssessment
 L3_PATTERNS: Tuple[Tuple[str, ...], ...] = (
     ("想死", "不想活", "结束生命", "自杀", "轻生"),
     ("kill myself", "end my life", "suicide", "want to die"),
-    ("割腕", "上吊", "跳楼", "服药过量", "过量服药", "喝药", "吃药自杀"),
+    ("割腕", "上吊", "跳楼", "服药过量", "过量服药", "吃药自杀"),
     ("伤害别人", "杀人", "报复社会", "我会杀", "hurt someone", "kill them"),
 )
 
-L2_PATTERNS: Tuple[Tuple[str, ...], ...] = (
-    ("已经准备好了", "准备好了", "今晚就", "马上就", "已经买了", "刚买了"),
-    ("刀", "绳子", "药", "安眠药", "刀片", "汽油", "农药"),
-    ("计划", "方法", "步骤", "怎么做", "具体做法", "地点", "时间"),
-    ("can't go on", "cannot go on", "no way out", "i am done"),
-)
+# L2 不再用"刀/药"这类孤立名词命中：日常场景（切菜、吃药）会大量误报。
+# 只有当"准备/手段/计划"与"风险语境"同时出现时才升级。
+L2_PREPARE = ("已经准备好了", "准备好了", "今晚就", "马上就", "已经买了", "刚买了", "写好了遗书")
+L2_MEANS = ("安眠药", "刀片", "农药", "汽油", "绳子", "天台", "遗书", "过量服药")
+L2_PLAN = ("计划", "具体做法", "步骤", "地点", "时间")
+L2_ENGLISH = ("can't go on", "cannot go on", "no way out", "i am done")
+
+RISK_CONTEXT = ("死", "不想活", "结束", "解脱", "自杀", "伤害自己", "离开这个世界", "消失")
 
 L1_PATTERNS: Tuple[Tuple[str, ...], ...] = (
     ("崩溃", "难受", "焦虑", "失眠", "失恋", "孤独", "委屈", "自责"),
     ("撑不住", "压力好大", "很痛苦", "想哭", "心慌", "害怕", "迷茫"),
-    ("burned out", "anxious", "overwhelmed", "lonely", "panic"),
+    ("活着没意思", "活着没意义", "没有意义", "看不到希望", "绝望", "撑不下去", "好累", "活着好累"),
+    ("burned out", "anxious", "overwhelmed", "lonely", "panic", "hopeless"),
 )
 
 
@@ -38,6 +41,10 @@ def _collect_signals(text: str, patterns: Tuple[Tuple[str, ...], ...]) -> List[s
         if hits:
             signals.append(hits[0])
     return signals
+
+
+def _has_any(normalized: str, words: Tuple[str, ...]) -> bool:
+    return any(word.lower() in normalized for word in words)
 
 
 def assess_risk(text: str) -> DuxinRiskAssessment:
@@ -59,11 +66,20 @@ def assess_risk(text: str) -> DuxinRiskAssessment:
             ],
         )
 
-    signals = _collect_signals(normalized, L2_PATTERNS)
-    if signals:
+    risk_context = _has_any(normalized, RISK_CONTEXT)
+    l2_signals: List[str] = []
+    if risk_context:
+        for group in (L2_PREPARE, L2_MEANS, L2_PLAN):
+            hits = [item for item in group if item in normalized]
+            if hits:
+                l2_signals.append(hits[0])
+    english_hits = [item for item in L2_ENGLISH if item in normalized]
+    l2_signals.extend(english_hits)
+
+    if l2_signals:
         return DuxinRiskAssessment(
             risk_level="L2",
-            signals=signals,
+            signals=l2_signals,
             response_mode="stabilize",
             should_escalate=True,
             summary="检测到潜在危机或已经出现准备行为。",
@@ -104,18 +120,21 @@ def assess_risk(text: str) -> DuxinRiskAssessment:
 
 
 def build_crisis_reply(risk: DuxinRiskAssessment, latest_user_message: str = "") -> str:
-    user_hint = f"你刚才提到：{latest_user_message}\n" if latest_user_message else ""
-    escalation = "\n".join(f"- {item}" for item in risk.recommended_actions)
+    """User-facing crisis message.
+
+    Deliberately does NOT echo the user's own high-risk wording and does NOT
+    expose the internal handling checklist；it only offers concrete, safe next
+    steps plus both mainland-China and overseas hotlines.
+    """
     return (
-        "我很重视你现在的状态。\n"
-        f"{user_hint}"
-        "我不会展开危险细节，但我会先陪你把眼前这一步稳住。\n\n"
-        "现在请立刻做这 3 件事：\n"
-        "1. 把可能伤害自己的东西放远一点。\n"
-        "2. 联系一个现实里可信任的人，告诉对方你现在需要陪伴。\n"
-        "3. 如果你在美国或加拿大，请拨打或短信 988；如果在其他地区，请联系当地急救/危机热线。\n\n"
-        "如果你愿意，只要回复我一个字“在”，我就继续陪你走下一步。\n\n"
-        f"{escalation}"
+        "我很在意你现在的安全，谢谢你愿意说出来。\n\n"
+        "先不讲细节，我们一起把眼前这一步稳住，可以做这 3 件事：\n"
+        "1. 把可能伤害自己的东西先放远，或交给身边人保管。\n"
+        "2. 现在就联系一个你信得过的、可信任的人，请对方来陪你，不要一个人待着。\n"
+        "3. 拨打心理援助热线：中国大陆可拨 400-161-9995（全国 24 小时心理援助热线）"
+        "或 010-82951332（北京心理危机研究与干预中心）；紧急情况请直接拨 120 / 110。"
+        "香港可拨 2389 2222；美国、加拿大可拨打或短信 988。\n\n"
+        "如果你愿意，回我一个“在”，我就继续陪你把下一步走完。你不需要一个人扛。"
     )
 
 

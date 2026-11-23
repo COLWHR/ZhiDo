@@ -84,6 +84,29 @@ class Settings(BaseSettings):
     SECRET_KEY_FILE: Optional[str] = None
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 10080  # 7 days
     REFRESH_TOKEN_EXPIRE_DAYS: int = 30
+    WS_TICKET_EXPIRE_SECONDS: int = 120
+    # Only enable when a trusted deployment needs to provision admin/god accounts via the API.
+    ALLOW_ROLE_SELECTION: bool = False
+
+    # Upload / abuse protection
+    MAX_UPLOAD_SIZE_MB: int = 10
+    RATE_LIMIT_ENABLED: bool = True
+    TRUST_PROXY_HEADERS: bool = False
+
+    # Forum cost guard
+    MAX_CONCURRENT_FORUMS: int = 3
+    MAX_FORUM_TURNS: int = 40
+
+    # Logging
+    LOG_LEVEL: str = "INFO"
+
+    # Avatar illustration (optional upgrade on top of the built-in badge)
+    # Any OpenAI-compatible /images/generations endpoint works. Leave the key
+    # empty to keep the deterministic badge-only experience.
+    IMAGE_GEN_API_KEY: Optional[str] = None
+    IMAGE_GEN_BASE_URL: str = "https://ark.cn-beijing.volces.com/api/v3"
+    IMAGE_GEN_MODEL: Optional[str] = None
+    IMAGE_GEN_TIMEOUT_SECONDS: int = 90
 
     # Database Configuration
     TURSO_DATABASE_URL: Optional[str] = None

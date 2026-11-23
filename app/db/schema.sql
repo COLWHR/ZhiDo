@@ -4,6 +4,10 @@ CREATE TABLE IF NOT EXISTS users (
     username TEXT NOT NULL UNIQUE,
     password_hash TEXT NOT NULL,
     role TEXT NOT NULL DEFAULT 'user',
+    avatar TEXT,
+    avatar_kind TEXT DEFAULT 'initial',
+    avatar_updated_at DATETIME,
+    credits_balance INTEGER DEFAULT 1000,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -115,6 +119,28 @@ CREATE TABLE IF NOT EXISTS system_logs (
     FOREIGN KEY (forum_id) REFERENCES forums(id) ON DELETE CASCADE
 );
 
+-- RAAMS Round Scheduling Records table
+-- 每轮调度的风险门控、候选打分、选中者与成本时延，供论文实验指标汇总。
+CREATE TABLE IF NOT EXISTS round_schedule_records (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    forum_id INTEGER NOT NULL,
+    turn_count INTEGER DEFAULT 0,
+    risk_level TEXT DEFAULT 'L0',
+    risk_signals TEXT DEFAULT '[]',
+    escalated INTEGER DEFAULT 0,
+    gate_action TEXT DEFAULT 'normal',
+    turn_mode TEXT DEFAULT 'transition',
+    uncertainty TEXT DEFAULT 'low',
+    interrupted_by_user INTEGER DEFAULT 0,
+    selected_speaker TEXT,
+    candidates TEXT DEFAULT '[]',
+    speak_tokens INTEGER DEFAULT 0,
+    latency_ms INTEGER DEFAULT 0,
+    ablation TEXT DEFAULT '{}',
+    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (forum_id) REFERENCES forums(id) ON DELETE CASCADE
+);
+
 -- Chat Messages table (时空之门单聊历史)
 CREATE TABLE IF NOT EXISTS chat_messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -160,6 +186,25 @@ CREATE TABLE IF NOT EXISTS persona_skill_bindings (
     FOREIGN KEY (persona_id) REFERENCES personas(id) ON DELETE CASCADE,
     FOREIGN KEY (skill_id) REFERENCES skills(id) ON DELETE CASCADE,
     UNIQUE (persona_id, skill_id)
+);
+
+-- Persona Knowledge Base: files uploaded to a specific agent, parsed and injected into its prompts
+CREATE TABLE IF NOT EXISTS persona_knowledge (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    persona_id INTEGER NOT NULL,
+    owner_id INTEGER NOT NULL,
+    file_name TEXT NOT NULL,
+    mime_type TEXT,
+    size INTEGER,
+    storage_url TEXT NOT NULL,
+    sha256 TEXT,
+    extracted_text TEXT,
+    char_count INTEGER DEFAULT 0,
+    status TEXT DEFAULT 'ready',
+    meta TEXT DEFAULT '{}',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (persona_id) REFERENCES personas(id) ON DELETE CASCADE,
+    FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
 -- Upload attachments
@@ -289,4 +334,85 @@ CREATE TABLE IF NOT EXISTS duxin_safety_feedback (
     FOREIGN KEY (session_id) REFERENCES duxin_sessions(id) ON DELETE SET NULL
 );
 
+-- Credit ledger: per-account balance changes (signup bonus, recharge, consumption, adjustment)
+CREATE TABLE IF NOT EXISTS credit_transactions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    change_amount INTEGER NOT NULL,
+    balance_after INTEGER NOT NULL DEFAULT 0,
+    reason TEXT NOT NULL,
+    category TEXT DEFAULT 'text',
+    tokens_input INTEGER DEFAULT 0,
+    tokens_output INTEGER DEFAULT 0,
+    vision_count INTEGER DEFAULT 0,
+    reference_type TEXT,
+    reference_id INTEGER,
+    note TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+-- Dynamic system configuration (LLM API, credit rules, system switches), persisted in DB
+CREATE TABLE IF NOT EXISTS system_config (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    config_key TEXT NOT NULL UNIQUE,
+    config_value TEXT,
+    category TEXT DEFAULT 'system',
+    label TEXT,
+    description TEXT,
+    updated_by INTEGER,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (updated_by) REFERENCES users(id) ON DELETE SET NULL
+);
+
+-- Admin action audit log
+CREATE TABLE IF NOT EXISTS admin_audit_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    actor_id INTEGER,
+    action TEXT NOT NULL,
+    target_type TEXT,
+    target_id INTEGER,
+    detail TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (actor_id) REFERENCES users(id) ON DELETE SET NULL
+);
+
+-- Team (multi-agent group chat): an owner-assembled group of personas
+CREATE TABLE IF NOT EXISTS teams (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    description TEXT DEFAULT '',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS team_members (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    team_id INTEGER NOT NULL,
+    persona_id INTEGER NOT NULL,
+    role TEXT DEFAULT 'member',
+    joined_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (team_id, persona_id),
+    FOREIGN KEY (team_id) REFERENCES teams(id) ON DELETE CASCADE,
+    FOREIGN KEY (persona_id) REFERENCES personas(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS team_messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    team_id INTEGER NOT NULL,
+    sender_type TEXT NOT NULL,
+    user_id INTEGER,
+    persona_id INTEGER,
+    speaker_name TEXT NOT NULL,
+    content TEXT NOT NULL,
+    attachments TEXT DEFAULT '[]',
+    mentioned_persona_ids TEXT DEFAULT '[]',
+    message_type TEXT DEFAULT 'text',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (team_id) REFERENCES teams(id) ON DELETE CASCADE,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL,
+    FOREIGN KEY (persona_id) REFERENCES personas(id) ON DELETE SET NULL
+);
 

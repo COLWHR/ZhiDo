@@ -7,6 +7,9 @@ import json
 class UserBase(BaseModel):
     username: str
     role: Optional[str] = "user"
+    avatar: Optional[str] = None
+    avatar_kind: Optional[str] = "initial"
+    avatar_updated_at: Optional[datetime] = None
 
 class UserCreate(UserBase):
     password: str
@@ -16,6 +19,16 @@ class UserResponse(UserBase):
     created_at: datetime
     
     model_config = ConfigDict(from_attributes=True)
+
+class AvatarUploadResponse(BaseModel):
+    storage_url: str
+    preview_url: str
+    thumb_url: str
+
+
+class AvatarGenerateRequest(BaseModel):
+    style: str = "editorial"
+
 
 class Token(BaseModel):
     access_token: str
@@ -179,6 +192,45 @@ class AttachmentResponse(AttachmentBase):
     persona_id: Optional[int] = None
     chat_message_id: Optional[int] = None
     session_id: Optional[int] = None
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+    @field_validator("meta", mode="before")
+    @classmethod
+    def parse_meta(cls, v: Any) -> Dict[str, Any]:
+        if isinstance(v, str):
+            try:
+                parsed = json.loads(v)
+                if isinstance(parsed, dict):
+                    return parsed
+            except json.JSONDecodeError:
+                return {}
+        if v is None:
+            return {}
+        return v
+
+
+class KnowledgeDocBase(BaseModel):
+    persona_id: int
+    file_name: str
+    mime_type: Optional[str] = None
+    size: Optional[int] = None
+    storage_url: str
+    sha256: Optional[str] = None
+    extracted_text: Optional[str] = None
+    char_count: int = 0
+    status: str = "ready"
+    meta: Dict[str, Any] = Field(default_factory=dict)
+
+
+class KnowledgeDocCreate(KnowledgeDocBase):
+    owner_id: int
+
+
+class KnowledgeDocResponse(KnowledgeDocBase):
+    id: int
+    owner_id: int
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
@@ -427,4 +479,87 @@ class GodGenerateRequest(BaseModel):
 
 class ForumStartRequest(BaseModel):
     ablation_flags: Optional[Dict[str, bool]] = None
+
+
+# --- Team (multi-agent group chat) Schemas ---
+class TeamCreate(BaseModel):
+    name: str
+    description: Optional[str] = ""
+    persona_ids: List[int]
+
+
+class TeamUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+
+
+class TeamAddMembers(BaseModel):
+    persona_ids: List[int]
+
+
+class TeamMemberResponse(BaseModel):
+    persona_id: int
+    name: str
+    title: Optional[str] = None
+    bio: Optional[str] = None
+    avatar: Optional[str] = None
+    role: str = "member"
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class TeamResponse(BaseModel):
+    id: int
+    owner_id: int
+    name: str
+    description: Optional[str] = ""
+    members: List[TeamMemberResponse] = []
+    created_at: Optional[datetime] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class TeamChatAttachment(BaseModel):
+    id: Optional[int] = None
+    file_name: str
+    mime_type: Optional[str] = None
+    size: Optional[int] = None
+    kind: Optional[str] = None
+    storage_url: str
+    preview_url: Optional[str] = None
+    sha256: Optional[str] = None
+    meta: Optional[Dict[str, Any]] = None
+
+
+class TeamChatRequest(BaseModel):
+    content: str
+    attachments: List[TeamChatAttachment] = []
+    mentioned_persona_ids: List[int] = []
+
+
+class TeamMessageResponse(BaseModel):
+    id: int
+    team_id: int
+    sender_type: str
+    user_id: Optional[int] = None
+    persona_id: Optional[int] = None
+    speaker_name: str
+    content: str
+    attachments: List[Any] = []
+    mentioned_persona_ids: List[int] = []
+    message_type: str = "text"
+    created_at: Optional[datetime] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+    @field_validator("attachments", "mentioned_persona_ids", mode="before")
+    @classmethod
+    def _parse_json_list(cls, v: Any) -> List[Any]:
+        if isinstance(v, str):
+            try:
+                parsed = json.loads(v)
+                return parsed if isinstance(parsed, list) else []
+            except Exception:
+                return []
+        return v if isinstance(v, list) else []
 

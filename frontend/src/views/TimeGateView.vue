@@ -23,10 +23,7 @@
             :class="{ active: currentAgent?.id === agent.id }"
             @click="switchAgent(agent)"
           >
-            <a-avatar size="small" :style="{ background: getAvatarGradient(agent.name) }">
-              <img v-if="getAgentAvatarSrc(agent)" :src="getAgentAvatarSrc(agent)" :alt="agent.name" />
-              <template v-else>{{ getAvatarInitial(agent.name, '智') }}</template>
-            </a-avatar>
+            <IdentityAvatar kind="persona" :entity="agent" :size="26" shape="circle" />
             <div class="agent-info">
               <div class="agent-name">{{ agent.name }}</div>
               <div class="agent-title">{{ agent.title }}</div>
@@ -67,10 +64,7 @@
           <!-- 对话头部 -->
           <div class="chat-header">
             <div class="current-agent-info">
-              <a-avatar size="small" :style="{ background: getAvatarGradient(currentAgent.name) }">
-                <img v-if="getAgentAvatarSrc(currentAgent)" :src="getAgentAvatarSrc(currentAgent)" :alt="currentAgent.name" />
-                <template v-else>{{ getAvatarInitial(currentAgent.name, '智') }}</template>
-              </a-avatar>
+              <IdentityAvatar kind="persona" :entity="currentAgent" :size="32" shape="circle" />
               <div class="agent-meta">
                 <span class="agent-name">{{ currentAgent.name }}</span>
                 <span class="agent-title">{{ currentAgent.title }}</span>
@@ -95,10 +89,7 @@
           <div class="messages-container" ref="messagesContainer">
             <div v-for="(msg, index) in messages" :key="index" class="message-item" :class="msg.role">
               <div v-if="msg.role === 'assistant'" class="message-avatar">
-                <a-avatar size="small" :style="{ background: getAvatarGradient(currentAgent.name) }">
-                  <img v-if="getAgentAvatarSrc(currentAgent)" :src="getAgentAvatarSrc(currentAgent)" :alt="currentAgent.name" />
-                  <template v-else>{{ getAvatarInitial(currentAgent.name, '智') }}</template>
-                </a-avatar>
+                <IdentityAvatar kind="persona" :entity="currentAgent" :size="28" shape="circle" />
               </div>
               <div class="message-content">
                 <div class="message-bubble" v-html="formatMessage(msg.content)"></div>
@@ -126,18 +117,13 @@
                 <div class="message-time">{{ formatTime(msg.timestamp) }}</div>
               </div>
               <div v-if="msg.role === 'user'" class="message-avatar">
-                <a-avatar size="small" style="background: #3bb36b">
-                  {{ getAvatarInitial(authStore.user?.username, '我') }}
-                </a-avatar>
+                <IdentityAvatar kind="user" :entity="authStore.user" :size="28" shape="circle" />
               </div>
             </div>
             
             <div v-if="loading" class="message-item assistant">
               <div class="message-avatar">
-                <a-avatar size="small" :style="{ background: getAvatarGradient(currentAgent.name) }">
-                  <img v-if="getAgentAvatarSrc(currentAgent)" :src="getAgentAvatarSrc(currentAgent)" :alt="currentAgent.name" />
-                  <template v-else>{{ getAvatarInitial(currentAgent.name, '智') }}</template>
-                </a-avatar>
+                <IdentityAvatar kind="persona" :entity="currentAgent" :size="28" shape="circle" />
               </div>
               <div class="message-content">
                 <div class="message-bubble thinking">
@@ -211,7 +197,7 @@ import {
 import { message } from 'ant-design-vue'
 import request from '@/utils/request'
 import { marked } from 'marked'
-import { getAvatarInitial, isImageAvatar } from '@/utils/avatar'
+import IdentityAvatar from '@/components/identity/IdentityAvatar.vue'
 
 type ChatAttachment = {
   id: number
@@ -263,15 +249,6 @@ const currentConversationSummary = computed(() => {
   const userMessages = messages.value.filter(msg => !msg.isWelcome)
   return `${userMessages.length} 条消息`
 })
-const getAgentAvatarSrc = (agent?: any) => {
-  return isImageAvatar(agent?.avatar) ? agent.avatar : ''
-}
-
-const getAvatarGradient = (name: string) => {
-  const colors = ['#3bb36b', '#2fa15c', '#1a1d1e', '#333333', '#6b7280', '#f59e0b', '#3b82f6', '#15803d']
-  return colors[name.charCodeAt(0) % colors.length]
-}
-
 const scrollToBottom = () => {
   nextTick(() => {
     if (messagesContainer.value) {

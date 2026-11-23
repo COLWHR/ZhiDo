@@ -13,12 +13,15 @@
       <div class="chat-window" ref="chatWindowRef">
         <div v-for="(msg, index) in messages" :key="index" class="message-item" :class="msg.role">
           <div class="avatar">
-            <a-avatar v-if="msg.role === 'assistant'" style="background-color: #faad14">
-              <img :src="assistantAvatarSrc" alt="智能体生成助手" />
-            </a-avatar>
-            <a-avatar v-else style="background-color: #3bb36b">
-              {{ getAvatarInitial(authStore.user?.username, 'U') }}
-            </a-avatar>
+            <IdentityAvatar
+              v-if="msg.role === 'assistant'"
+              kind="persona"
+              :entity="{ name: '智造助手', title: '智能体生成助手' }"
+              rank-label="助手"
+              :size="38"
+              shape="circle"
+            />
+            <IdentityAvatar v-else kind="user" :entity="authStore.user" :size="38" shape="circle" />
           </div>
           <div class="content-wrapper">
             <!-- User Message -->
@@ -107,13 +110,18 @@
         
         <div v-if="loading && (!messages[messages.length-1]?.items || messages[messages.length-1]?.items?.length === 0)" class="message-item assistant">
           <div class="avatar">
-            <a-avatar style="background-color: #faad14">
-              <img :src="assistantAvatarSrc" alt="智能体生成助手" />
-            </a-avatar>
+            <IdentityAvatar
+              kind="persona"
+              :entity="{ name: '智造助手', title: '智能体生成助手' }"
+              rank-label="助手"
+              :size="38"
+              shape="circle"
+            />
           </div>
           <div class="content-wrapper">
             <div class="bubble loading">
-              <a-spin size="small" /> 正在调用助手...
+              <span class="typing-dots" aria-hidden="true"><i></i><i></i><i></i></span>
+              <span>{{ pendingText }}</span>
             </div>
           </div>
         </div>
@@ -145,7 +153,7 @@ import { message } from 'ant-design-vue'
 import { usePersonaStore } from '@/stores/persona'
 import { useAuthStore } from '@/stores/auth'
 import { SendOutlined } from '@ant-design/icons-vue'
-import { generatePersonaAvatar, getAvatarInitial } from '@/utils/avatar'
+import IdentityAvatar from '@/components/identity/IdentityAvatar.vue'
 
 interface MessageItem {
   type: 'text' | 'thought' | 'search' | 'persona' | 'error' | 'status'
@@ -187,7 +195,7 @@ const chatWindowRef = ref<HTMLElement | null>(null)
 const messages = ref<ChatMessage[]>([])
 const loading = ref(false)
 const totalToGenerate = ref(1)
-const assistantAvatarSrc = generatePersonaAvatar('智造助手', 'agent-builder', 'real-god')
+const pendingText = ref('正在连接助手…')
 
 const visible = computed({
   get: () => props.open,
@@ -260,13 +268,21 @@ const handleSend = async () => {
 
   loading.value = true
   totalToGenerate.value = 1
+  pendingText.value = '正在理解你的需求…'
 
-  const assistantMsg: ChatMessage = {
+  messages.value.push({
     role: 'assistant',
     items: [],
     timestamp: Date.now()
+  })
+  const lastIndex = messages.value.length - 1
+
+  // 始终通过响应式数组末尾消息的代理引用读写 items，避免直接改原始对象导致视图不刷新
+  const getItems = (): MessageItem[] => {
+    const msg = messages.value[lastIndex]
+    if (!msg.items) msg.items = []
+    return msg.items
   }
-  messages.value.push(assistantMsg)
 
   try {
     const response = await fetch('/api/v1/god/generate_real', {
@@ -284,11 +300,10 @@ const handleSend = async () => {
     }
 
     const reader = response.body?.getReader()
-    if (!reader) throw new Error('No reader')
+    if (!reader) throw new Error('当前浏览器不支持流式响应')
 
     const decoder = new TextDecoder()
     let buffer = ''
-    const items = assistantMsg.items ?? (assistantMsg.items = [])
 
     while (true) {
       const { done, value } = await reader.read()
@@ -316,14 +331,18 @@ const handleSend = async () => {
 
         const eventType = event.type || 'text'
         const content = event.content
+        const items = getItems()
 
         if (eventType === 'count') {
           totalToGenerate.value = Number(content) || totalToGenerate.value
         } else if (eventType === 'progress') {
           if (typeof event.total === 'number') totalToGenerate.value = event.total
-          appendStatus(items, `正在生成第 ${event.current ?? '?'} 个，进度 ${event.current ?? '?'} / ${event.total ?? '?'}`)
+          pendingText.value = `正在生成第 ${event.current ?? '?'} 个，进度 ${event.current ?? '?'} / ${event.total ?? '?'}`
+          appendStatus(items, pendingText.value)
         } else if (eventType === 'status' || eventType === 'thought_start') {
-          appendStatus(items, typeof content === 'string' ? content : '正在处理...')
+          const text = typeof content === 'string' ? content : '正在处理...'
+          pendingText.value = text
+          appendStatus(items, text)
         } else if (eventType === 'thought' || eventType === 'thought_chunk') {
           if (typeof content === 'string' && content.trim()) {
             appendThought(items, content)
@@ -332,6 +351,7 @@ const handleSend = async () => {
           const text = typeof content === 'string' ? content : ''
           if (text.includes('Search')) {
             const query = text.replace(/Search[:：\[\]]/g, '').trim()
+            pendingText.value = `正在检索：${query || text}`
             items.push({ type: 'search', query: query || text, status: 'loading', result: '' })
           }
         } else if (eventType === 'observation') {
@@ -363,11 +383,11 @@ const handleSend = async () => {
       }
     }
 
-    if (!assistantMsg.items || assistantMsg.items.length === 0) {
-      assistantMsg.items = [{ type: 'text', content: '生成完成。' }]
+    if (getItems().length === 0) {
+      getItems().push({ type: 'text', content: '生成完成。' })
     }
   } catch (error: any) {
-    assistantMsg.items?.push({ type: 'error', content: error.message || '生成失败' })
+    getItems().push({ type: 'error', content: error.message || '生成失败' })
   } finally {
     loading.value = false
   }
@@ -543,6 +563,42 @@ watch(visible, (newVal) => {
 .loading {
   font-style: italic;
   color: #8c8c8c;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.typing-dots {
+  display: inline-flex;
+  gap: 3px;
+  margin-right: 6px;
+}
+
+.typing-dots i {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #3bb36b;
+  animation: typing-bounce 1.2s infinite ease-in-out;
+}
+
+.typing-dots i:nth-child(2) {
+  animation-delay: 0.15s;
+}
+
+.typing-dots i:nth-child(3) {
+  animation-delay: 0.3s;
+}
+
+@keyframes typing-bounce {
+  0%, 60%, 100% {
+    transform: translateY(0);
+    opacity: 0.4;
+  }
+  30% {
+    transform: translateY(-4px);
+    opacity: 1;
+  }
 }
 
 .persona-card {

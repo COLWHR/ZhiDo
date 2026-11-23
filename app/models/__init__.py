@@ -11,6 +11,9 @@ class User(BaseModel):
     username: str
     password_hash: str
     role: str = "user"
+    avatar: Optional[str] = None
+    avatar_kind: Optional[str] = "initial"
+    avatar_updated_at: Optional[datetime] = None
     created_at: datetime
     
     model_config = ConfigDict(from_attributes=True)

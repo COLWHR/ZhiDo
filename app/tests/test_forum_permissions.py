@@ -194,7 +194,16 @@ def test_forum_websocket_requires_token_and_accepts_authorized_client(client):
         with client.websocket_connect(f"/api/v1/forums/{forum['id']}/ws"):
             pass
 
+    # 长效 access token 不再允许出现在 URL 中
     token = owner_headers["Authorization"].split(" ", 1)[1]
-    with client.websocket_connect(f"/api/v1/forums/{forum['id']}/ws?token={token}") as websocket:
+    with pytest.raises(Exception):
+        with client.websocket_connect(f"/api/v1/forums/{forum['id']}/ws?token={token}"):
+            pass
+
+    ticket_response = client.post(f"/api/v1/forums/{forum['id']}/ws-ticket", headers=owner_headers)
+    assert ticket_response.status_code == 200
+    ticket = ticket_response.json()["ticket"]
+
+    with client.websocket_connect(f"/api/v1/forums/{forum['id']}/ws?ticket={ticket}") as websocket:
         websocket.send_text("ping")
         assert websocket.receive_text() == "pong"

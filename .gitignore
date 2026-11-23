@@ -185,3 +185,20 @@ madf_data/
 
 # Exam results (Generated files)
 exam/results/
+
+# Large promo media (videos / cover images, kept locally)
+/promo/
+
+# Personal paper materials
+/RAAMS论文/
+
+# Root-level binary documents (kept locally)
+/*.docx
+/*.pdf
+
+# Temporary check / baseline artifacts
+/.git-diff-check.txt
+/.pytest-baseline.txt
+
+# Local probe scripts
+/.probe_*.py

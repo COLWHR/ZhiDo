@@ -4,7 +4,16 @@ from pathlib import Path
 
 from app.db.client import get_db, db_manager
 from app.core.cache import cache_service
+from app.core.config import settings
 from app.main import app as fastapi_app
+
+
+@pytest.fixture(scope="function", autouse=True)
+def _test_isolation(monkeypatch):
+    """Tests create admin/user accounts directly, and would trip rate limits."""
+    monkeypatch.setattr(settings, "ALLOW_ROLE_SELECTION", True)
+    monkeypatch.setattr(settings, "RATE_LIMIT_ENABLED", False)
+    yield
 
 @pytest.fixture(scope="function")
 def db(tmp_path):

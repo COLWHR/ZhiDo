@@ -81,10 +81,7 @@
                   >
                     <div class="card-header">
                       <div class="user-info">
-                        <a-avatar :style="{ backgroundColor: getAvatarColor(persona.name) }" size="large">
-                          <img v-if="getPersonaAvatarSrc(persona.avatar)" :src="getPersonaAvatarSrc(persona.avatar)" :alt="persona.name" />
-                          <template v-else>{{ getAvatarInitial(persona.name, '智') }}</template>
-                        </a-avatar>
+                        <IdentityAvatar kind="persona" :entity="persona" :size="48" shape="circle" />
                         <div class="name-title">
                           <div class="name" :title="persona.name">{{ persona.name }}</div>
                           <div class="title" :title="persona.title || '暂无头衔'">
@@ -222,18 +219,28 @@
         <a-divider orientation="left">基本信息</a-divider>
         <a-form-item label="头像">
           <div class="avatar-editor" data-test="persona-avatar-editor">
-            <a-avatar :size="72" :style="{ backgroundColor: getAvatarColor(formState.name || '智能体') }" class="avatar-preview">
-              <img v-if="formAvatarSrc" :src="formAvatarSrc" alt="智能体头像预览" />
-              <template v-else>{{ getAvatarInitial(formState.name, '智') }}</template>
-            </a-avatar>
+            <IdentityAvatar
+              kind="persona"
+              :entity="{
+                name: formState.name,
+                title: formState.title,
+                bio: formState.bio,
+                stance: formState.stance,
+                theories: formState.theories_str,
+                avatar: formState.avatar
+              }"
+              :size="72"
+              shape="circle"
+              class="avatar-preview"
+            />
             <div class="avatar-editor-body">
-              <div class="avatar-editor-title">头像形象</div>
-              <p>上传图片或让 AI 按名称生成；不设置时自动使用名称首字。</p>
+              <div class="avatar-editor-title">身份头像</div>
+              <p>默认为按学科生成的学者徽章；可上传图片，或升级为 AI 插画形象。</p>
               <div class="avatar-actions">
                 <input
                   ref="avatarInputRef"
                   type="file"
-                  accept="image/*"
+                  accept="image/jpeg,image/png,image/webp,image/gif,image/bmp"
                   class="avatar-file-input"
                   data-test="persona-avatar-file"
                   @change="handleAvatarFileChange"
@@ -241,11 +248,23 @@
                 <a-button size="small" :loading="avatarUploading" data-test="persona-avatar-upload" @click="triggerAvatarUpload">
                   上传头像
                 </a-button>
-                <a-button size="small" type="primary" ghost data-test="persona-avatar-generate" @click="generateAvatarForForm">
-                  AI 生成头像
+                <a-select v-model:value="illustrationStyle" size="small" style="width: 92px">
+                  <a-select-option value="editorial">编辑插画</a-select-option>
+                  <a-select-option value="clay">黏土 3D</a-select-option>
+                  <a-select-option value="ink">水墨</a-select-option>
+                </a-select>
+                <a-button
+                  size="small"
+                  type="primary"
+                  ghost
+                  :loading="avatarGenerating"
+                  data-test="persona-avatar-generate"
+                  @click="generateAvatarForForm"
+                >
+                  AI 生成形象
                 </a-button>
                 <a-button size="small" type="link" data-test="persona-avatar-clear" @click="clearAvatarForForm">
-                  使用默认首字
+                  使用默认徽章
                 </a-button>
               </div>
             </div>
@@ -327,10 +346,7 @@
       <template v-if="currentPersona">
         <div class="persona-detail-panel">
           <div class="detail-avatar-strip">
-            <a-avatar :size="76" :style="{ backgroundColor: getAvatarColor(currentPersona.name) }">
-              <img v-if="getPersonaAvatarSrc(currentPersona.avatar)" :src="getPersonaAvatarSrc(currentPersona.avatar)" :alt="currentPersona.name" />
-              <template v-else>{{ getAvatarInitial(currentPersona.name, '智') }}</template>
-            </a-avatar>
+            <IdentityAvatar kind="persona" :entity="currentPersona" :size="76" shape="circle" />
             <div>
               <strong>{{ currentPersona.name }}</strong>
               <span>{{ currentPersona.title || '暂无头衔' }}</span>
@@ -385,20 +401,73 @@
               </div>
             </div>
           </div>
+
+          <div class="persona-detail-section knowledge-section">
+            <div class="knowledge-header">
+              <h3>知识库</h3>
+              <a-button
+                size="small"
+                type="primary"
+                ghost
+                :loading="knowledgeUploading"
+                data-test="persona-knowledge-upload"
+                @click="triggerKnowledgeUpload"
+              >
+                <upload-outlined /> 上传资料
+              </a-button>
+              <input
+                ref="knowledgeInputRef"
+                type="file"
+                class="avatar-file-input"
+                accept=".txt,.md,.csv,.json,.jsonl,.xml,.html,.py,.ts,.js,.css,.yml,.yaml,.docx"
+                @change="handleKnowledgeFileChange"
+              />
+            </div>
+            <p class="knowledge-hint">
+              支持 txt / md / csv / json / docx 等文档，内容会在单聊与圆桌发言时作为该智能体的专属参考资料。
+            </p>
+            <a-spin :spinning="knowledgeLoading">
+              <a-empty v-if="knowledgeDocs.length === 0" description="暂无知识库资料" />
+              <div v-for="doc in knowledgeDocs" :key="doc.id" class="knowledge-item">
+                <div class="knowledge-meta">
+                  <strong :title="doc.file_name">{{ doc.file_name }}</strong>
+                  <span class="knowledge-sub">
+                    {{ formatSize(doc.size) }} · {{ doc.char_count }} 字<template v-if="doc.status === 'unparsed'"> · 未解析</template>
+                  </span>
+                </div>
+                <a-button
+                  type="text"
+                  size="small"
+                  danger
+                  data-test="persona-knowledge-delete"
+                  @click="removeKnowledge(doc)"
+                >
+                  <delete-outlined />
+                </a-button>
+              </div>
+            </a-spin>
+          </div>
         </div>
       </template>
     </a-drawer>
+
+    <AvatarCropModal
+      v-model:open="avatarCropOpen"
+      :file="pendingAvatarFile"
+      @confirm="uploadCroppedAvatar"
+    />
   </div>
 </template>
 
 <script setup lang="ts">
 import { onMounted, reactive, ref, computed, createVNode, watch } from 'vue'
-import { usePersonaStore, type Persona } from '@/stores/persona'
+import { usePersonaStore, type Persona, type KnowledgeDoc } from '@/stores/persona'
 import { useAuthStore } from '@/stores/auth'
 import { message, Modal } from 'ant-design-vue'
 import request from '@/utils/request'
 import RealGodAgentModal from '@/components/god/RealGodAgentModal.vue'
-import { generatePersonaAvatar, getAvatarInitial, isImageAvatar } from '@/utils/avatar'
+import IdentityAvatar from '@/components/identity/IdentityAvatar.vue'
+import AvatarCropModal from '@/components/identity/AvatarCropModal.vue'
 import {
   PlusOutlined,
   EditOutlined,
@@ -406,7 +475,8 @@ import {
   EyeOutlined,
   GlobalOutlined,
   MoreOutlined,
-  ExclamationCircleOutlined
+  ExclamationCircleOutlined,
+  UploadOutlined
 } from '@ant-design/icons-vue'
 
 const personaStore = usePersonaStore()
@@ -423,6 +493,14 @@ const visibilityFilter = ref<'all' | 'public' | 'private'>('all')
 const spotlightIndex = ref(0)
 const avatarInputRef = ref<HTMLInputElement | null>(null)
 const avatarUploading = ref(false)
+const avatarGenerating = ref(false)
+const pendingAvatarFile = ref<File | null>(null)
+const avatarCropOpen = ref(false)
+const illustrationStyle = ref<'editorial' | 'clay' | 'ink'>('editorial')
+const knowledgeDocs = ref<KnowledgeDoc[]>([])
+const knowledgeLoading = ref(false)
+const knowledgeUploading = ref(false)
+const knowledgeInputRef = ref<HTMLInputElement | null>(null)
 const modalityOptions = [
   { label: '文本', value: 'text' },
   { label: '图片', value: 'image' },
@@ -521,12 +599,6 @@ const formState = reactive({
   modalities: ['text'] as string[]
 })
 
-const formAvatarSrc = computed(() => getPersonaAvatarSrc(formState.avatar))
-
-const getPersonaAvatarSrc = (avatar?: string) => {
-  return isImageAvatar(avatar) ? avatar : ''
-}
-
 const fetchSkillCatalog = async () => {
   try {
     const res = await request.get('/skills/catalog')
@@ -545,16 +617,6 @@ onMounted(async () => {
     fetchSkillCatalog(),
   ])
 })
-
-const getAvatarColor = (name: string) => {
-  const colors = ['#f56a00', '#7265e6', '#ffbf00', '#00a2ae', '#3bb36b', '#52c41a', '#eb2f96']
-  let hash = 0
-  for (let i = 0; i < name.length; i++) {
-    hash = name.charCodeAt(i) + ((hash << 5) - hash)
-  }
-  const index = Math.abs(hash) % colors.length
-  return colors[index]
-}
 
 const showModal = (record?: Persona) => {
   visible.value = true
@@ -587,33 +649,62 @@ const triggerAvatarUpload = () => {
   avatarInputRef.value?.click()
 }
 
-const handleAvatarFileChange = async (event: Event) => {
+const handleAvatarFileChange = (event: Event) => {
   const input = event.target as HTMLInputElement
   const file = input.files?.[0]
+  input.value = ''
   if (!file) return
+  if (!file.type.startsWith('image/')) {
+    message.error('请选择图片文件')
+    return
+  }
+  if (file.size > 2 * 1024 * 1024) {
+    message.error('头像不能超过 2MB')
+    return
+  }
+  pendingAvatarFile.value = file
+  avatarCropOpen.value = true
+}
 
+const uploadCroppedAvatar = async (file: File) => {
   const formData = new FormData()
-  formData.append('file', file)
+  formData.append('file', file, file.name)
   avatarUploading.value = true
 
   try {
-    const res = await request.post('/upload/image', formData, {
+    const res = await request.post('/upload/avatar', formData, {
       headers: { 'Content-Type': 'multipart/form-data' }
     })
-    formState.avatar = res.data?.preview_url || res.data?.storage_url || ''
+    formState.avatar = res.data?.storage_url || res.data?.preview_url || ''
     message.success('头像已上传')
   } catch (error) {
     console.error('Failed to upload persona avatar:', error)
-    message.error('头像上传失败，请稍后重试')
   } finally {
     avatarUploading.value = false
-    input.value = ''
+    pendingAvatarFile.value = null
   }
 }
 
-const generateAvatarForForm = () => {
-  formState.avatar = generatePersonaAvatar(formState.name || '智能体', formState.title, formState.stance)
-  message.success('已生成头像')
+const generateAvatarForForm = async () => {
+  if (!editingId.value) {
+    message.warning('请先保存智能体，再生成 AI 插画形象')
+    return
+  }
+  avatarGenerating.value = true
+  try {
+    const res = await request.post(`/personas/${editingId.value}/avatar/generate`, {
+      style: illustrationStyle.value
+    })
+    formState.avatar = res.data?.avatar || ''
+    const target = personaStore.personas.find(item => item.id === editingId.value)
+    if (target) target.avatar = res.data?.avatar || null
+    message.success('已生成 AI 形象')
+  } catch (error: any) {
+    const detail = error?.response?.data?.detail
+    if (detail) message.warning(detail)
+  } finally {
+    avatarGenerating.value = false
+  }
 }
 
 const clearAvatarForForm = () => {
@@ -679,6 +770,69 @@ const showDeleteConfirm = (persona: Persona) => {
 const showDetails = (persona: Persona) => {
   currentPersona.value = persona
   detailsVisible.value = true
+  fetchKnowledge(persona.id)
+}
+
+const formatSize = (size?: number | null) => {
+  if (!size || size <= 0) return ''
+  if (size < 1024) return `${size} B`
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`
+  return `${(size / (1024 * 1024)).toFixed(1)} MB`
+}
+
+const fetchKnowledge = async (personaId: number) => {
+  knowledgeLoading.value = true
+  try {
+    const res = await request.get(`/personas/${personaId}/knowledge`, {
+      headers: { 'Cache-Control': 'no-cache' }
+    })
+    knowledgeDocs.value = res.data || []
+  } catch (error) {
+    console.error('加载知识库失败:', error)
+    knowledgeDocs.value = []
+  } finally {
+    knowledgeLoading.value = false
+  }
+}
+
+const triggerKnowledgeUpload = () => {
+  knowledgeInputRef.value?.click()
+}
+
+const handleKnowledgeFileChange = async (event: Event) => {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  if (!file || !currentPersona.value) return
+
+  const formData = new FormData()
+  formData.append('file', file, file.name)
+  knowledgeUploading.value = true
+
+  try {
+    const res = await request.post(
+      `/personas/${currentPersona.value.id}/knowledge`,
+      formData,
+      { headers: { 'Content-Type': 'multipart/form-data' } }
+    )
+    knowledgeDocs.value.push(res.data)
+    message.success('知识库资料已上传')
+  } catch (error) {
+    console.error('上传知识库失败:', error)
+  } finally {
+    knowledgeUploading.value = false
+  }
+}
+
+const removeKnowledge = async (doc: KnowledgeDoc) => {
+  if (!currentPersona.value) return
+  try {
+    await request.delete(`/personas/${currentPersona.value.id}/knowledge/${doc.id}`)
+    knowledgeDocs.value = knowledgeDocs.value.filter(item => item.id !== doc.id)
+    message.success('已删除知识库资料')
+  } catch (error) {
+    console.error('删除知识库失败:', error)
+  }
 }
 
 const showRealGodModal = () => {
@@ -1021,6 +1175,55 @@ const showRealGodModal = () => {
   min-height: 0;
   grid-template-columns: minmax(0, 0.42fr) minmax(0, 1fr);
   flex: 1 1 auto;
+}
+
+.knowledge-section {
+  flex: 0 0 auto;
+}
+
+.knowledge-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 6px;
+}
+
+.knowledge-header h3 {
+  margin: 0;
+}
+
+.knowledge-hint {
+  margin: 0 0 10px;
+  font-size: 12px;
+  color: rgba(0, 0, 0, 0.45);
+}
+
+.knowledge-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 0;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+}
+
+.knowledge-meta {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.knowledge-meta strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.knowledge-sub {
+  font-size: 12px;
+  color: rgba(0, 0, 0, 0.45);
 }
 
 .persona-text-section {

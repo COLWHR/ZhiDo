@@ -2,6 +2,9 @@ export interface AuthUser {
   id: number
   username: string
   role: string
+  avatar?: string | null
+  avatar_kind?: string | null
+  avatar_updated_at?: string | null
 }
 
 export interface AuthTokenPayload {

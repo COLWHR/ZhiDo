@@ -3,11 +3,23 @@ from typing import List, Annotated, Any
 import json
 import logging
 from app.db.session import get_db
-from app.schemas import PersonaCreate, PersonaUpdate, PersonaResponse
-from app.crud import create_persona, get_persona, update_persona, delete_persona
+from app.schemas import (
+    AvatarGenerateRequest,
+    PersonaCreate,
+    PersonaUpdate,
+    PersonaResponse,
+)
+from app.crud import create_persona, get_persona, delete_persona, update_persona
 from app.api.deps import get_current_user
 from app.db.client import fetch_all
 from app.core.cache import cache_service
+from app.services.avatar_service import (
+    AvatarGenerationUnavailable,
+    AvatarImageError,
+    delete_avatar_files,
+    generate_illustration_bytes,
+    save_avatar_bytes,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -158,11 +170,54 @@ def update_existing_persona(
         raise HTTPException(status_code=403, detail="Not authorized to update this persona")
 
     updated_persona = update_persona(db, persona_id=persona_id, updates=updates)
-    
+
+    if updates.avatar is not None and db_persona.avatar and db_persona.avatar != updates.avatar:
+        delete_avatar_files(db_persona.avatar)
+
     # Invalidate list cache for this user
     cache_service.delete_keys_pattern(f"personas:list:{current_user.id}:*")
     
     return updated_persona
+
+
+@router.post("/{persona_id}/avatar/generate", response_model=PersonaResponse)
+def generate_persona_avatar(
+    persona_id: int,
+    payload: AvatarGenerateRequest,
+    current_user: Annotated[Any, Depends(get_current_user)],
+    db: Any = Depends(get_db),
+):
+    """Upgrade a persona's badge to an AI illustration.
+
+    Returns 503 when no image provider is configured — the badge keeps working.
+    """
+    db_persona = get_persona(db, persona_id=persona_id)
+    if not db_persona:
+        raise HTTPException(status_code=404, detail="Persona not found")
+    if db_persona.owner_id != current_user.id and current_user.role != "god":
+        raise HTTPException(status_code=403, detail="Not authorized to update this persona")
+
+    style = (payload.style or "editorial").strip().lower()
+    if style not in {"editorial", "clay", "ink"}:
+        raise HTTPException(status_code=400, detail="不支持的插画风格")
+
+    try:
+        raw = generate_illustration_bytes(db_persona, style)
+        stored = save_avatar_bytes(raw, scope="personas", owner_key=persona_id)
+    except AvatarGenerationUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    except AvatarImageError as exc:
+        raise HTTPException(status_code=502, detail=f"生成结果无法作为头像：{exc}")
+
+    previous = db_persona.avatar
+    updated = update_persona(
+        db, persona_id=persona_id, updates=PersonaUpdate(avatar=stored["storage_url"])
+    )
+    if previous and previous != stored["storage_url"]:
+        delete_avatar_files(previous)
+
+    cache_service.delete_keys_pattern(f"personas:list:{current_user.id}:*")
+    return updated
 
 @router.delete("/{persona_id}", status_code=status.HTTP_200_OK)
 def delete_existing_persona(

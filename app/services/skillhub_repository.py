@@ -76,7 +76,8 @@ def map_skillhub_summary(item: dict[str, Any], rank: int) -> dict[str, Any]:
         "params_schema": {},
         "permission_scope": ["skillhub"],
         "cost_level": "medium" if required_tools else "low",
-        "status": "active",
+        # SkillHub sync only imports metadata; nothing here is executable yet.
+        "status": "beta",
         "source": "skillhub",
         "source_url": source_url,
         "source_slug": slug,

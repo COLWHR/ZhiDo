@@ -2,14 +2,7 @@
   <div class="participant-grid">
     <div v-for="item in participants" :key="item.persona.id" class="participant-card">
       <div class="card-header">
-        <a-avatar :style="{ backgroundColor: getAvatarColor(item.persona.name) }" size="large">
-          <img
-            v-if="getPersonaAvatarSrc(item.persona.avatar)"
-            :src="getPersonaAvatarSrc(item.persona.avatar)"
-            :alt="item.persona.name"
-          />
-          <template v-else>{{ getAvatarInitial(item.persona.name, '智') }}</template>
-        </a-avatar>
+        <IdentityAvatar kind="persona" :entity="item.persona" :size="44" shape="circle" />
         <div class="header-info">
           <div class="name-row">
             <span class="participant-name">{{ item.persona.name }}</span>
@@ -34,28 +27,15 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useForumStore } from '@/stores/forum'
-import { getAvatarInitial, isImageAvatar } from '@/utils/avatar'
+import IdentityAvatar from '@/components/identity/IdentityAvatar.vue'
 
 const store = useForumStore()
 const participants = computed(() => store.currentForum?.participants ?? [])
-
-const getAvatarColor = (name: string) => {
-  const colors = ['#f56a00', '#7265e6', '#ffbf00', '#00a2ae', '#3bb36b', '#52c41a', '#eb2f96']
-  let hash = 0
-  for (let i = 0; i < name.length; i++) {
-    hash = name.charCodeAt(i) + ((hash << 5) - hash)
-  }
-  const index = Math.abs(hash) % colors.length
-  return colors[index]
-}
 
 const getStanceColor = (stance: string) => {
   if (stance.includes('支持') || stance.includes('正方')) return 'success'
   if (stance.includes('反对') || stance.includes('反方')) return 'error'
   return 'default'
-}
-const getPersonaAvatarSrc = (avatar?: string) => {
-  return isImageAvatar(avatar) ? avatar : ''
 }
 </script>
 

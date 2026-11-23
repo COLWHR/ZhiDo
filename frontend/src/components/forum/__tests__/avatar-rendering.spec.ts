@@ -32,14 +32,13 @@ describe('forum avatar rendering', () => {
           })
         ],
         stubs: {
-          'a-avatar': { template: '<div class="avatar"><slot /></div>' },
           'a-tag': { template: '<span><slot /></span>' },
           'a-tooltip': { template: '<span><slot /></span>' }
         }
       }
     })
 
-    const avatar = wrapper.find('.avatar img')
+    const avatar = wrapper.find('.identity-avatar img')
     expect(avatar.exists()).toBe(true)
     expect(avatar.attributes('src')).toBe('/uploads/avatars/insight.png')
   })
@@ -55,18 +54,16 @@ describe('forum avatar rendering', () => {
       },
       global: {
         stubs: {
-          'a-avatar': { template: '<div class="avatar"><slot /><slot name="icon" /></div>' },
           'a-tag': { template: '<span><slot /></span>' },
           'a-collapse': { template: '<div><slot /></div>' },
           'a-collapse-panel': { template: '<div><slot /></div>' },
-          UserOutlined: true,
           LoadingOutlined: true,
           BulbOutlined: true
         }
       }
     })
 
-    const avatar = wrapper.find('.avatar img')
+    const avatar = wrapper.find('.message-avatar img')
     expect(avatar.exists()).toBe(true)
     expect(avatar.attributes('src')).toBe('data:image/svg+xml;charset=UTF-8,%3Csvg%3E%3C/svg%3E')
   })

@@ -150,7 +150,7 @@ export const useForumStore = defineStore('forum', {
         this.wsForumId = null
     },
 
-    connectWebSocket(forumId: number) {
+    async connectWebSocket(forumId: number) {
         // If already connected to this forum, just return
         if (this.ws && this.isConnected && this.wsForumId === forumId && this.ws.readyState === WebSocket.OPEN) {
             return
@@ -165,12 +165,27 @@ export const useForumStore = defineStore('forum', {
         this.isManuallyClosed = false
         this.wsForumId = forumId
         const wsBase = this.resolveWsBase()
-        const token = localStorage.getItem('token') || ''
-        const tokenQuery = token ? `?token=${encodeURIComponent(token)}` : ''
-        const wsUrl = `${wsBase}/api/v1/forums/${forumId}/ws${tokenQuery}`
+
+        // WebSocket 无法携带 Authorization 头，改用 2 分钟有效的一次性票据，
+        // 避免把长效 JWT 暴露在 URL / 访问日志里。
+        let ticket = ''
+        try {
+            const ticketRes = await request.post(`/forums/${forumId}/ws-ticket`)
+            ticket = ticketRes.data?.ticket || ''
+        } catch (err) {
+            console.error('[WS Global] Failed to obtain ws ticket', err)
+            this.isConnected = false
+            return
+        }
+
+        if (this.isManuallyClosed || this.wsForumId !== forumId) {
+            return
+        }
+
+        const wsUrl = `${wsBase}/api/v1/forums/${forumId}/ws?ticket=${encodeURIComponent(ticket)}`
         const maxReconnectAttempts = 10
 
-        console.log(`[WS Global] Connecting to: ${wsUrl}`)
+        console.log(`[WS Global] Connecting to forum ${forumId}`)
 
         try {
             this.ws = new WebSocket(wsUrl)

@@ -45,6 +45,23 @@ def create_refresh_token(subject: Union[str, Any], expires_delta: Optional[timed
     return token
 
 
+def create_ws_ticket(subject: Union[str, Any], forum_id: int) -> str:
+    """Short-lived, single-purpose credential used for WebSocket handshakes.
+
+    The ticket is still a query parameter (browsers/WeChat cannot set headers on
+    a WebSocket), but it expires in two minutes and is useless as an API token.
+    """
+    expire = datetime.now(timezone.utc) + timedelta(seconds=settings.WS_TICKET_EXPIRE_SECONDS)
+    payload = {
+        "exp": expire,
+        "sub": str(subject),
+        "token_type": "ws_ticket",
+        "forum_id": int(forum_id),
+        "iat": datetime.now(timezone.utc),
+    }
+    return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
+
+
 def decode_token(token: str) -> dict[str, Any]:
     return jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
 

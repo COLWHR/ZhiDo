@@ -117,14 +117,13 @@
         </div>
 
         <template v-if="assignedCounselor">
-          <div class="counselor-avatar">
-            <img
-              v-if="getCounselorAvatarSrc(assignedCounselor)"
-              :src="getCounselorAvatarSrc(assignedCounselor)"
-              :alt="assignedCounselor.name"
-            />
-            <template v-else>{{ getAvatarInitial(assignedCounselor.name, '渡') }}</template>
-          </div>
+          <IdentityAvatar
+            kind="counselor"
+            :entity="counselorEntity(assignedCounselor)"
+            :size="72"
+            shape="square"
+            class="counselor-avatar"
+          />
           <h2>智小渡建议先见 {{ assignedCounselor.name }}</h2>
           <p class="assignment-reason">{{ store.teamPlan?.handoff_reason }}</p>
           <div class="counselor-detail">
@@ -184,14 +183,22 @@
           class="message-row"
           :class="item.role"
         >
-          <a-avatar class="message-avatar" :style="messageAvatarStyle(item.role)">
-            <img
-              v-if="getMessageAvatarSrc(item)"
-              :src="getMessageAvatarSrc(item)"
-              :alt="speakerName(item)"
-            />
-            <template v-else>{{ item.role === 'user' ? userInitial : assistantInitial(item) }}</template>
-          </a-avatar>
+          <IdentityAvatar
+            v-if="item.role === 'user'"
+            kind="user"
+            :entity="authStore.user"
+            :size="42"
+            shape="circle"
+            class="message-avatar"
+          />
+          <IdentityAvatar
+            v-else
+            kind="counselor"
+            :entity="assistantEntity(item)"
+            :size="42"
+            shape="circle"
+            class="message-avatar"
+          />
           <div class="message-body">
             <div class="message-meta">
               <strong>{{ speakerName(item) }}</strong>
@@ -204,14 +211,13 @@
         </div>
 
         <div v-if="store.streaming" class="message-row assistant">
-          <a-avatar class="message-avatar" :style="assistantAvatarStyle">
-            <img
-              v-if="streamingAssistantAvatarSrc"
-              :src="streamingAssistantAvatarSrc"
-              :alt="assignedCounselor?.name || '智小渡'"
-            />
-            <template v-else>渡</template>
-          </a-avatar>
+          <IdentityAvatar
+            kind="counselor"
+            :entity="assignedCounselor ? counselorEntity(assignedCounselor) : { name: '智小渡', title: '心理支持' }"
+            :size="42"
+            shape="circle"
+            class="message-avatar"
+          />
           <div class="message-body">
             <div class="message-meta">
               <strong>{{ assignedCounselor?.name || '智小渡' }}</strong>
@@ -285,8 +291,7 @@ import { marked } from 'marked'
 import { useAuthStore } from '@/stores/auth'
 import { useDuxinStore } from '@/stores/duxin'
 import type { DuxinMessage, DuxinMode, DuxinTeamMember } from '@/types/duxin'
-import { generatePersonaAvatar, getAvatarInitial } from '@/utils/avatar'
-
+import IdentityAvatar from '@/components/identity/IdentityAvatar.vue'
 marked.setOptions({ breaks: true, gfm: true })
 
 type IntakePreset = {
@@ -382,8 +387,6 @@ const visibleTeamMembers = computed(() => {
   return members.filter(member => member.key !== 'zhidu').slice(0, 3)
 })
 
-const userInitial = computed(() => authStore.user?.username?.slice(0, 1).toUpperCase() || '你')
-
 const flowStatus = computed(() => {
   if (store.streaming) return '智小渡正在判断'
   if (assignedCounselor.value) return `已分配：${assignedCounselor.value.name}`
@@ -446,11 +449,6 @@ const riskBanner = computed(() => {
   return null
 })
 
-const assistantAvatarStyle = {
-  background: '#3bb36b',
-  color: '#fff'
-}
-
 const modeLabel = (mode?: DuxinMode | string) => {
   const labels: Record<string, string> = {
     support: '情绪支持',
@@ -485,18 +483,6 @@ const formatTime = (value?: string | null) => {
 
 const renderMarkdown = (content: string) => marked.parse(content || '') as string
 
-const messageAvatarStyle = (role: DuxinMessage['role']) => {
-  if (role === 'user') {
-    return {
-      background: '#3bb36b',
-      color: '#fff'
-    }
-  }
-  return assistantAvatarStyle
-}
-
-const assistantInitial = (item: DuxinMessage) => speakerName(item).slice(0, 1) || '渡'
-
 const speakerName = (item: DuxinMessage) => {
   if (item.role === 'user') return '你'
   const team = item.metadata?.team
@@ -504,22 +490,17 @@ const speakerName = (item: DuxinMessage) => {
   return counselor?.name || item.agent_name || '智小渡'
 }
 
-const getCounselorAvatarSrc = (member?: DuxinTeamMember | null) => {
-  if (!member) return ''
-  return generatePersonaAvatar(member.name, member.focus, member.style)
-}
-
-const getMessageAvatarSrc = (item: DuxinMessage) => {
-  if (item.role === 'user') return ''
-  const team = item.metadata?.team
-  const counselor = team?.members?.find(member => member.key !== 'zhidu')
-  if (counselor) return getCounselorAvatarSrc(counselor)
-  return generatePersonaAvatar(speakerName(item), item.agent_name || 'duxin', 'conversation')
-}
-
-const streamingAssistantAvatarSrc = computed(() => {
-  return getCounselorAvatarSrc(assignedCounselor.value) || generatePersonaAvatar('智小渡', 'support', 'streaming')
+const counselorEntity = (member: DuxinTeamMember) => ({
+  name: member.name,
+  title: member.focus || '心理咨询师',
+  stance: member.style
 })
+
+const assistantEntity = (item: DuxinMessage) => {
+  const counselor = item.metadata?.team?.members?.find(member => member.key !== 'zhidu')
+  if (counselor) return counselorEntity(counselor)
+  return { name: speakerName(item), title: '心理支持' }
+}
 
 const scrollToBottom = async () => {
   await nextTick()

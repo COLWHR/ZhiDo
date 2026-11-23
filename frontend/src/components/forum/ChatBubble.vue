@@ -1,15 +1,23 @@
 <template>
   <div class="message-item" :class="{ 'message-moderator': isModerator }">
     <div class="message-avatar">
-      <a-avatar v-if="isModerator" key="moderator-avatar" :style="{ backgroundColor: avatarColor }" size="large">
-        <template #icon>
-          <user-outlined />
-        </template>
-      </a-avatar>
-      <a-avatar v-else key="participant-avatar" :style="{ backgroundColor: avatarColor }" size="large">
-        <img v-if="avatarSrc" :src="avatarSrc" :alt="speakerName" />
-        <template v-else>{{ speakerInitial }}</template>
-      </a-avatar>
+      <IdentityAvatar
+        v-if="isModerator"
+        key="moderator-avatar"
+        kind="persona"
+        :entity="{ name: speakerName, title: '主持人' }"
+        rank-label="主持"
+        :size="40"
+        shape="circle"
+      />
+      <IdentityAvatar
+        v-else
+        key="participant-avatar"
+        :kind="kind"
+        :entity="{ name: speakerName, username: speakerName, avatar }"
+        :size="40"
+        shape="circle"
+      />
     </div>
     
     <div class="message-content-wrapper">
@@ -67,8 +75,8 @@
 
 <script setup lang="ts">
 import { computed } from 'vue'
-import { LoadingOutlined, UserOutlined, BulbOutlined } from '@ant-design/icons-vue'
-import { getAvatarInitial, isImageAvatar } from '@/utils/avatar'
+import { LoadingOutlined, BulbOutlined } from '@ant-design/icons-vue'
+import IdentityAvatar from '@/components/identity/IdentityAvatar.vue'
 
 const props = defineProps<{
   speakerName: string
@@ -79,6 +87,7 @@ const props = defineProps<{
   isStreaming?: boolean
   moderatorId?: number | null
   avatar?: string
+  kind?: 'persona' | 'user'
 }>()
 
 const isModerator = computed(() => {
@@ -89,30 +98,11 @@ const isStreaming = computed(() => {
     return props.isStreaming || false
 })
 
-const speakerInitial = computed(() => {
-    return getAvatarInitial(props.speakerName, '?')
-})
-
-const avatarSrc = computed(() => {
-  return isImageAvatar(props.avatar) ? props.avatar : ''
-})
-
 const formatTime = (isoString: string) => {
     if (!isoString) return ''
     const date = new Date(isoString)
     return date.toLocaleTimeString()
 }
-
-const avatarColor = computed(() => {
-  if (isModerator.value) return '#e6c273' // Light gold for moderator
-  const colors = ['#f0a868', '#a395e6', '#ffd68a', '#86d3e0', '#3bb36b', '#a8d8b9', '#e6b8d6']
-  let hash = 0
-  for (let i = 0; i < props.speakerName.length; i++) {
-    hash = props.speakerName.charCodeAt(i) + ((hash << 5) - hash)
-  }
-  const index = Math.abs(hash) % colors.length
-  return colors[index]
-})
 
 // Content type detection computed properties
 const isTextContent = computed(() => {

@@ -11,6 +11,19 @@ const ForumDetailView = () => import('@/views/ForumDetailView.vue')
 const AssistantView = () => import('@/views/AssistantView.vue')
 const SkillRepositoryView = () => import('@/views/SkillRepositoryView.vue')
 const TimeGateView = () => import('@/views/TimeGateView.vue')
+const TeamListView = () => import('@/views/team/TeamListView.vue')
+const TeamChatView = () => import('@/views/team/TeamChatView.vue')
+const DecisionPanelView = () => import('@/views/DecisionPanelView.vue')
+// 渡心功能暂隐藏：后续恢复时取消下方注释
+// const DuxinView = () => import('@/views/DuxinView.vue')
+const AdminOverviewView = () => import('@/views/admin/AdminOverviewView.vue')
+const AdminUsersView = () => import('@/views/admin/AdminUsersView.vue')
+const AdminConfigView = () => import('@/views/admin/AdminConfigView.vue')
+const AdminPersonasView = () => import('@/views/admin/AdminPersonasView.vue')
+const AdminSkillsView = () => import('@/views/admin/AdminSkillsView.vue')
+const AdminAuditView = () => import('@/views/admin/AdminAuditView.vue')
+
+const ADMIN_ROLES = ['admin', 'god']
 
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
@@ -68,6 +81,68 @@ const router = createRouter({
           name: 'time-gate',
           component: TimeGateView
         },
+        {
+          path: 'teams',
+          name: 'team-list',
+          component: TeamListView
+        },
+        {
+          path: 'teams/:id',
+          name: 'team-chat',
+          component: TeamChatView
+        },
+        {
+          path: 'decision',
+          name: 'decision-panel',
+          component: DecisionPanelView
+        },
+        // 渡心功能暂隐藏：后续恢复时取消下方注释
+        // {
+        //   path: 'duxin',
+        //   name: 'duxin',
+        //   component: DuxinView
+        // },
+        {
+          path: 'admin',
+          redirect: '/admin/overview',
+          meta: { requiresAuth: true, requiresAdmin: true }
+        },
+        {
+          path: 'admin/overview',
+          name: 'admin-overview',
+          component: AdminOverviewView,
+          meta: { requiresAuth: true, requiresAdmin: true }
+        },
+        {
+          path: 'admin/users',
+          name: 'admin-users',
+          component: AdminUsersView,
+          meta: { requiresAuth: true, requiresAdmin: true }
+        },
+        {
+          path: 'admin/config',
+          name: 'admin-config',
+          component: AdminConfigView,
+          meta: { requiresAuth: true, requiresAdmin: true }
+        },
+        {
+          path: 'admin/personas',
+          name: 'admin-personas',
+          component: AdminPersonasView,
+          meta: { requiresAuth: true, requiresAdmin: true }
+        },
+        {
+          path: 'admin/skills',
+          name: 'admin-skills',
+          component: AdminSkillsView,
+          meta: { requiresAuth: true, requiresAdmin: true }
+        },
+        {
+          path: 'admin/audit',
+          name: 'admin-audit',
+          component: AdminAuditView,
+          meta: { requiresAuth: true, requiresAdmin: true }
+        },
       ]
     },
     {
@@ -91,7 +166,15 @@ router.beforeEach((to, _from, next) => {
       return
     }
   }
-  
+
+  if (to.matched.some(record => record.meta.requiresAdmin)) {
+    const role = authStore.user?.role
+    if (!ADMIN_ROLES.includes(role || '')) {
+      next('/dashboard')
+      return
+    }
+  }
+
   next()
 })
 

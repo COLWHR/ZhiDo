@@ -16,6 +16,7 @@
         :moderator-id="msg.moderator_id"
         :thought="msg.thought"
         :avatar="getMessageAvatar(msg)"
+        :kind="msg.persona_id ? 'persona' : 'user'"
       />
     </div>
     <div ref="bottomRef"></div>

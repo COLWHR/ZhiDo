@@ -1,4 +1,12 @@
 import pytest
+from uuid import uuid4
+
+
+def _auth_headers(client, prefix="agent_user"):
+    username = f"{prefix}_{uuid4().hex[:8]}"
+    client.post("/api/v1/auth/register", json={"username": username, "password": "p", "role": "u"})
+    token = client.post("/api/v1/auth/login", data={"username": username, "password": "p"}).json()["access_token"]
+    return {"Authorization": f"Bearer {token}"}
 
 def test_create_persona_user_not_found(client):
     # Register and get token
@@ -68,9 +76,12 @@ def test_post_message_persona_not_found(client):
 def test_chat_agent_model_failure_returns_error(client):
     from unittest.mock import patch
 
+    headers = _auth_headers(client, "fail_agent")
+
     with patch("app.api.v1.endpoints.agents.get_chat_completion", side_effect=Exception("Init Failed")):
         response = client.post(
             "/api/v1/agents/chat",
+            headers=headers,
             json={
                 "agent_name": "FailAgent",
                 "persona_json": {"name": "Fail"},
@@ -110,7 +121,11 @@ def test_chat_agent_stream_falls_back_when_llm_unavailable(client):
             status_code=401,
         ),
     ):
-        response = client.post("/api/v1/agents/chat/stream", json=payload)
+        response = client.post(
+            "/api/v1/agents/chat/stream",
+            json=payload,
+            headers=_auth_headers(client, "stream_agent"),
+        )
 
     assert response.status_code == 200
     body = response.text
@@ -162,7 +177,11 @@ def test_chat_agent_direct_endpoint_uses_llm_fallback(client):
             status_code=401,
         ),
     ):
-        response = client.post("/api/v1/agents/chat", json=payload)
+        response = client.post(
+            "/api/v1/agents/chat",
+            json=payload,
+            headers=_auth_headers(client, "direct_agent"),
+        )
 
     assert response.status_code == 200
     data = response.json()

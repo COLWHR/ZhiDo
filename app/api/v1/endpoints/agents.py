@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 
 from app.api.deps import get_current_user
 from app.crud import (
+    build_knowledge_block,
     clear_chat_history,
     create_artifact,
     create_task_run,
@@ -34,6 +35,8 @@ from app.services.skill_runtime import (
     render_text_artifact,
 )
 from utils import LLMServiceError, get_chat_completion
+from app.services import credit_service
+from app.services.credit_service import InsufficientCreditsError
 
 logger = logging.getLogger(__name__)
 
@@ -129,6 +132,27 @@ def _build_context_messages_with_attachments(
     return messages, use_vision, route
 
 
+def _inject_persona_knowledge(db, persona: Dict[str, Any], messages: list[dict]) -> None:
+    """Append the persona's uploaded knowledge base to the system prompt."""
+    persona_id = persona.get("id")
+    if not persona_id:
+        return
+    try:
+        block = build_knowledge_block(db, int(persona_id))
+    except Exception as exc:
+        logger.warning("Failed to load persona knowledge: %s", exc)
+        return
+    if not block:
+        return
+    if messages and messages[0].get("role") == "system":
+        messages[0]["content"] = (
+            f"{messages[0].get('content') or ''}\n\n"
+            "【你可参考的专属知识库】\n"
+            f"{block}\n\n"
+            "回答时优先依据以上知识库资料；若资料中没有相关信息，再依靠你的通用知识作答，不要编造资料里没有的内容。"
+        )
+
+
 def _artifact_from_text(
     db,
     owner_id: int,
@@ -165,24 +189,17 @@ def _artifact_from_text(
     return ArtifactResponse.model_validate(artifact)
 
 
-def _owner_id_from_request(persona_json: Dict[str, Any]) -> int:
-    try:
-        return int(persona_json.get("owner_id") or 1)
-    except Exception:
-        return 1
-
-
 def _maybe_create_artifact(
     db,
     request: AgentChatRequest,
     route: dict[str, Any],
     content: str,
+    owner_id: int,
     task_run_id: Optional[int] = None,
 ) -> list[ArtifactResponse]:
     if not route.get("should_generate_artifact"):
         return []
 
-    owner_id = _owner_id_from_request(request.persona_json)
     persona_id = request.persona_json.get("id")
     artifact_type = route.get("artifact_type") or "docx"
     artifact = _artifact_from_text(
@@ -199,6 +216,38 @@ def _maybe_create_artifact(
 
 def _stream_event(payload: dict[str, Any]) -> str:
     return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+
+# Disable proxy/CDN buffering so tokens reach the client as soon as they arrive.
+SSE_HEADERS = {
+    "Cache-Control": "no-cache, no-transform",
+    "X-Accel-Buffering": "no",
+    "Connection": "keep-alive",
+}
+
+
+def _count_vision_images(messages: List[Dict[str, Any]]) -> int:
+    count = 0
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        content = msg.get("content")
+        if isinstance(content, list):
+            for part in content:
+                if isinstance(part, dict) and part.get("type") == "image_url":
+                    count += 1
+    return count
+
+
+def _messages_plain_text(messages: List[Dict[str, Any]]) -> str:
+    chunks: List[str] = []
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        content = msg.get("content")
+        if isinstance(content, str):
+            chunks.append(content)
+    return "\n".join(chunks)
 
 
 def _message_timestamp_ms(value: Any) -> int:
@@ -241,7 +290,11 @@ def _task_run_update(
 
 
 @router.post("/chat", response_model=AgentChatResponse)
-async def chat_with_agent(request: AgentChatRequest, db=Depends(get_db)):
+def chat_with_agent(
+    request: AgentChatRequest,
+    db=Depends(get_db),
+    current_user=Depends(get_current_user),
+):
     try:
         messages, use_vision, route = _build_context_messages_with_attachments(
             request.persona_json,
@@ -249,6 +302,19 @@ async def chat_with_agent(request: AgentChatRequest, db=Depends(get_db)):
             [att.model_dump() for att in request.attachments],
             base_url="",
         )
+        _inject_persona_knowledge(db, request.persona_json, messages)
+
+        legacy_vision = _count_vision_images(messages)
+        legacy_est = credit_service.estimate_from_text(
+            db, input_text=_messages_plain_text(messages), output_text="", vision_count=legacy_vision
+        )
+        try:
+            credit_service.check_sufficient(db, current_user.id, legacy_est["cost"])
+        except InsufficientCreditsError as exc:
+            raise HTTPException(
+                status_code=402,
+                detail=f"积分余额不足（当前 {exc.balance}，预计需要 {exc.required}），请联系管理员充值。",
+            )
 
         if len(messages) <= 1:
             return AgentChatResponse(
@@ -272,7 +338,7 @@ async def chat_with_agent(request: AgentChatRequest, db=Depends(get_db)):
             task_run = create_task_run(
                 db,
                 TaskRunCreate(
-                    owner_id=_owner_id_from_request(request.persona_json),
+                    owner_id=current_user.id,
                     persona_id=request.persona_json.get("id"),
                     skill_key=route.get("skill_key"),
                     session_id=None,
@@ -283,7 +349,9 @@ async def chat_with_agent(request: AgentChatRequest, db=Depends(get_db)):
                 ),
             )
 
-        artifacts = _maybe_create_artifact(db, request, route, content, task_run_id=getattr(task_run, "id", None))
+        artifacts = _maybe_create_artifact(
+            db, request, route, content, owner_id=current_user.id, task_run_id=getattr(task_run, "id", None)
+        )
 
         return AgentChatResponse(content=content, route=route, artifacts=artifacts)
     except Exception as exc:
@@ -291,7 +359,12 @@ async def chat_with_agent(request: AgentChatRequest, db=Depends(get_db)):
 
 
 @router.post("/chat/stream")
-async def chat_with_agent_stream(request: AgentChatRequest, http_request: Request, db=Depends(get_db)):
+def chat_with_agent_stream(
+    request: AgentChatRequest,
+    http_request: Request,
+    db=Depends(get_db),
+    current_user=Depends(get_current_user),
+):
     try:
         messages, use_vision, route = _build_context_messages_with_attachments(
             request.persona_json,
@@ -299,15 +372,37 @@ async def chat_with_agent_stream(request: AgentChatRequest, http_request: Reques
             [att.model_dump() for att in request.attachments],
             base_url=str(http_request.base_url),
         )
+        _inject_persona_knowledge(db, request.persona_json, messages)
+
+        vision_count = _count_vision_images(messages)
+        input_text = _messages_plain_text(messages)
+        pre_est = credit_service.estimate_from_text(
+            db, input_text=input_text, output_text="", vision_count=vision_count
+        )
+        try:
+            credit_service.check_sufficient(db, current_user.id, pre_est["cost"])
+        except InsufficientCreditsError as exc:
+            def insufficient_stream():
+                yield ": connected\n\n"
+                yield _stream_event({
+                    "error": f"积分余额不足（当前 {exc.balance}，预计需要 {exc.required}），请联系管理员充值。",
+                    "kind": "insufficient_credits",
+                })
+                yield "data: [DONE]\n\n"
+
+            return StreamingResponse(
+                insufficient_stream(), media_type="text/event-stream", headers=SSE_HEADERS
+            )
 
         if len(messages) <= 1:
             async def empty_stream():
+                yield ": connected\n\n"
                 yield _stream_event({"content": "抱歉，我暂时没有收到有效输入。"})
                 yield "data: [DONE]\n\n"
 
-            return StreamingResponse(empty_stream(), media_type="text/event-stream")
+            return StreamingResponse(empty_stream(), media_type="text/event-stream", headers=SSE_HEADERS)
 
-        owner_id = _owner_id_from_request(request.persona_json)
+        owner_id = current_user.id
         task_run = None
         if route.get("should_generate_artifact"):
             task_run = create_task_run(
@@ -324,10 +419,13 @@ async def chat_with_agent_stream(request: AgentChatRequest, http_request: Reques
                 ),
             )
 
-        async def generate():
+        def generate():
             full_content = ""
             artifact_payload: list[ArtifactResponse] = []
             try:
+                # Flush the SSE connection immediately so the first token is not
+                # held back by an intermediary buffer.
+                yield ": connected\n\n"
                 stream = get_chat_completion(messages, stream=True, use_vision=use_vision, raise_error=True)
                 if not stream:
                     yield _stream_event({"content": "抱歉，我暂时无法调用模型服务。"})
@@ -346,12 +444,34 @@ async def chat_with_agent_stream(request: AgentChatRequest, http_request: Reques
                     full_content = "抱歉，我暂时无法调用模型服务。"
                     yield _stream_event({"content": full_content})
 
+                # Settle the credit charge for this turn (estimated tokens + any images).
+                try:
+                    usage = credit_service.estimate_from_text(
+                        db,
+                        input_text=input_text,
+                        output_text=full_content,
+                        vision_count=vision_count,
+                    )
+                    credit_service.charge(
+                        db,
+                        current_user.id,
+                        category="text_chat",
+                        tokens_input=usage["tokens_input"],
+                        tokens_output=usage["tokens_output"],
+                        vision_count=usage["vision_count"],
+                        reference_type="chat",
+                        note="单聊消耗",
+                    )
+                except Exception as charge_exc:
+                    logger.warning("Credit charge failed for user %s: %s", current_user.id, charge_exc)
+
                 if route.get("should_generate_artifact"):
                     artifact_payload = _maybe_create_artifact(
                         db,
                         request,
                         route,
                         full_content,
+                        owner_id=owner_id,
                         task_run_id=getattr(task_run, "id", None),
                     )
                     if task_run:
@@ -386,13 +506,13 @@ async def chat_with_agent_stream(request: AgentChatRequest, http_request: Reques
                 yield _stream_event({"error": str(e)})
                 yield "data: [DONE]\n\n"
 
-        return StreamingResponse(generate(), media_type="text/event-stream")
+        return StreamingResponse(generate(), media_type="text/event-stream", headers=SSE_HEADERS)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Stream failed: {exc}")
 
 
 @router.get("/chat/history/{persona_id}")
-async def get_user_chat_history(persona_id: int, db=Depends(get_db), current_user=Depends(get_current_user)):
+def get_user_chat_history(persona_id: int, db=Depends(get_db), current_user=Depends(get_current_user)):
     history = get_chat_history(db, current_user.id, persona_id)
     return [
         {
@@ -420,13 +540,13 @@ async def get_user_chat_history(persona_id: int, db=Depends(get_db), current_use
 
 
 @router.delete("/chat/history/{persona_id}")
-async def clear_user_chat_history(persona_id: int, db=Depends(get_db), current_user=Depends(get_current_user)):
+def clear_user_chat_history(persona_id: int, db=Depends(get_db), current_user=Depends(get_current_user)):
     success = clear_chat_history(db, current_user.id, persona_id)
     return {"success": success}
 
 
 @router.post("/chat/message")
-async def save_chat_message_endpoint(
+def save_chat_message_endpoint(
     request: ChatMessageCreate,
     db=Depends(get_db),
     current_user=Depends(get_current_user),

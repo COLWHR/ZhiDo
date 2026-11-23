@@ -12,6 +12,7 @@ from app.core.security import (
     create_token_pair,
     decode_token,
 )
+from app.core.roles import resolve_registration_role
 from app.core.hashing import Hasher
 
 import logging
@@ -119,9 +120,18 @@ def register(user: UserCreate, db: Any = Depends(get_db)):
     db_user = get_user_by_username(db, user.username)
     if db_user:
         raise HTTPException(status_code=400, detail="Username already registered")
-    
+
+    # 公共注册永远不能自选管理员/god 角色
+    user = user.model_copy(update={"role": resolve_registration_role(user.role)})
+
     # 创建用户
     new_user = create_user(db=db, user=user)
+    # 发放一次性注册赠送积分
+    try:
+        from app.services import credit_service
+        credit_service.ensure_signup_bonus(db, new_user.id)
+    except Exception as bonus_exc:
+        logger.warning("Signup bonus failed for %s: %s", new_user.username, bonus_exc)
     logger.info(f"New user {new_user.username} registered")
-    
+
     return new_user

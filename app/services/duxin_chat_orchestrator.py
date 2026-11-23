@@ -4,9 +4,12 @@ import json
 import logging
 from typing import Any, Dict, List
 
+from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 
 from app.api.deps import get_current_user
+from app.services import credit_service
+from app.services.credit_service import InsufficientCreditsError
 from app.db.session import get_db
 from app.schemas.duxin import DuxinMessageCreate, DuxinRiskAssessment
 from app.services.duxin_memory_service import duxin_memory_service
@@ -72,7 +75,7 @@ def save_assistant_reply(
     )
 
 
-async def stream_session_chat(
+def stream_session_chat(
     session_id: int,
     payload: DuxinMessageCreate,
     db,
@@ -124,7 +127,19 @@ async def stream_session_chat(
     ]
     llm_messages = build_chat_messages(session, history, memory_summary, risk, team_plan)
 
-    async def generate():
+    # Pre-check the prepaid balance before opening the LLM stream.
+    pre_est = credit_service.estimate_from_text(
+        db, input_text=payload.content, output_text="", vision_count=0
+    )
+    try:
+        credit_service.check_sufficient(db, current_user.id, pre_est["cost"])
+    except InsufficientCreditsError as exc:
+        raise HTTPException(
+            status_code=402,
+            detail=f"积分余额不足（当前 {exc.balance}，预计需要 {exc.required}），请联系管理员充值。",
+        )
+
+    def generate():
         yield f"data: {json.dumps({'type': 'session', 'session': session_to_dict(session)}, ensure_ascii=False)}\n\n"
         yield (
             "data: "
@@ -207,6 +222,22 @@ async def stream_session_chat(
                 agent_name=team_plan.primary_agent.name,
                 metadata={"risk": risk.model_dump(), "team": team_plan.to_dict()},
             )
+            try:
+                usage = credit_service.estimate_from_text(
+                    db, input_text=payload.content, output_text=full_reply, vision_count=0
+                )
+                credit_service.charge(
+                    db,
+                    current_user.id,
+                    category="duxin",
+                    tokens_input=usage["tokens_input"],
+                    tokens_output=usage["tokens_output"],
+                    reference_type="duxin_session",
+                    reference_id=session_id,
+                    note="渡心对话消耗",
+                )
+            except Exception as charge_exc:
+                logger.warning("Duxin credit charge failed for user %s: %s", current_user.id, charge_exc)
             yield f"data: {json.dumps({'type': 'done', 'session_id': session_id, 'risk_level': risk.risk_level}, ensure_ascii=False)}\n\n"
         except LLMServiceError as exc:
             logger.warning("Duxin LLM fallback: %s", exc)
@@ -245,4 +276,12 @@ async def stream_session_chat(
             )
             yield f"data: {json.dumps({'type': 'done', 'session_id': session_id, 'risk_level': risk.risk_level, 'error': True}, ensure_ascii=False)}\n\n"
 
-    return StreamingResponse(generate(), media_type="text/event-stream")
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )

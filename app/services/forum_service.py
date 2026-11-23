@@ -14,6 +14,23 @@ from app.core.websockets import manager
 from app.services.forum_scheduler import scheduler
 from app.agent.agent import ParticipantAgent
 from fastapi import HTTPException
+from app.core.config import settings
+
+
+def reconcile_running_forums(db: Any) -> int:
+    """Close forums that were left in 'running' by a previous process.
+
+    The scheduler keeps its state in memory, so after a restart those rows would
+    stay 'running' forever and no client could ever stop them.
+    """
+    from app.db.client import fetch_one
+
+    row = fetch_one(db.execute("SELECT COUNT(1) AS n FROM forums WHERE status = 'running'"))
+    stale = int(getattr(row, "n", 0) or 0) if row is not None else 0
+    if stale:
+        db.execute("UPDATE forums SET status = 'closed' WHERE status = 'running'")
+    return stale
+
 
 class ForumService:
     def __init__(self, db: Any):

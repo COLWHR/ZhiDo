@@ -18,6 +18,21 @@ export interface Persona {
   capabilities_version: number
 }
 
+export interface KnowledgeDoc {
+  id: number
+  persona_id: number
+  owner_id: number
+  file_name: string
+  mime_type?: string | null
+  size?: number | null
+  storage_url: string
+  sha256?: string | null
+  char_count: number
+  status: string
+  meta: Record<string, unknown>
+  created_at: string
+}
+
 interface CreatePersonaData {
   name: string
   title?: string

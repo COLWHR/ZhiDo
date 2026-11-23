@@ -1,10 +1,11 @@
 from fastapi import APIRouter
-from app.api.v1.endpoints import users, personas, forums, agents, auth, god, moderators, uploads, duxin, skills, multimodal, health
+from app.api.v1.endpoints import users, personas, forums, agents, auth, god, moderators, uploads, duxin, skills, multimodal, health, knowledge, admin, teams, decision
 
 api_router = APIRouter()
 api_router.include_router(auth.router, prefix="/auth", tags=["auth"])
 api_router.include_router(users.router, prefix="/users", tags=["users"])
 api_router.include_router(personas.router, prefix="/personas", tags=["personas"])
+api_router.include_router(knowledge.router, tags=["knowledge"])
 api_router.include_router(forums.router, prefix="/forums", tags=["forums"])
 api_router.include_router(agents.router, prefix="/agents", tags=["agents"])
 api_router.include_router(god.router, prefix="/god", tags=["god"])
@@ -14,3 +15,6 @@ api_router.include_router(skills.router, prefix="/skills", tags=["skills"])
 api_router.include_router(multimodal.router, tags=["multimodal"])
 api_router.include_router(duxin.router, prefix="/duxin", tags=["duxin"])
 api_router.include_router(health.router, tags=["health"])
+api_router.include_router(admin.router, tags=["admin"])
+api_router.include_router(teams.router, prefix="/teams", tags=["teams"])
+api_router.include_router(decision.router, prefix="/decision", tags=["decision"])
