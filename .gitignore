@@ -202,3 +202,9 @@ exam/results/
 
 # Local probe scripts
 /.probe_*.py
+
+# Local tool scratch dir
+.arts/
+
+# Local Word deliverables (source of truth is the .md in docs/)
+docs/*.docx
